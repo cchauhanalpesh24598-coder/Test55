@@ -4,12 +4,14 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.text.method.HideReturnsTransformationMethod;
 import android.text.method.PasswordTransformationMethod;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -154,28 +156,72 @@ public class FirebaseLoginActivity extends AppCompatActivity {
         }
     }
 
+    private static final String TAG = "FirebaseLoginActivity";
+
     /**
      * After Firebase login, attempt to fetch vault metadata from Firestore.
      * If vault exists: user has an existing account with encryption set up.
-     *   -> Redirect to MasterPasswordActivity (unlock mode)
-     * If no vault: new user, go to MainActivity (master password will be set up later).
+     *   -> Save locally, redirect to MasterPasswordActivity (UNLOCK mode)
+     * If vault NOT found but notes exist:
+     *   -> SAFETY: Show error, do NOT allow new vault creation (would make old notes undecryptable)
+     * If vault NOT found and NO notes:
+     *   -> Fresh user, redirect to MasterPasswordActivity (CREATE mode)
      */
     private void fetchVaultAndProceed() {
-        KeyManager km = KeyManager.getInstance(this);
+        final KeyManager km = KeyManager.getInstance(this);
+
+        Log.d(TAG, "[VAULT_FETCH] Starting vault fetch after Firebase login");
+
         km.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
             public void onResult(final boolean vaultFound) {
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (vaultFound) {
-                            // Vault found -- redirect to master password unlock
-                            // since user needs to enter their master password to decrypt
+                            Log.d(TAG, "[VAULT_EXISTS] Vault found in Firestore, going to UNLOCK mode");
+                            // Vault found and saved locally -- redirect to master password UNLOCK
                             Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
                             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
                             startActivity(intent);
                             finish();
                         } else {
-                            // No vault -- proceed to main (master password setup happens there)
-                            launchMain();
+                            Log.d(TAG, "[VAULT_MISSING] No vault in Firestore, checking if notes exist...");
+                            // SAFETY CHECK: Before allowing CREATE mode, check if notes exist
+                            // If notes exist but vault is missing, creating new vault = data loss
+                            checkNotesBeforeCreate(km);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /**
+     * SAFETY: Check if notes exist in Firestore BEFORE allowing vault creation.
+     * If notes exist but vault metadata is missing, we MUST NOT create a new vault
+     * because the new salt/DEK would make existing notes permanently undecryptable.
+     */
+    private void checkNotesBeforeCreate(final KeyManager km) {
+        km.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
+            public void onResult(final boolean notesExist) {
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        if (notesExist) {
+                            // DANGER: Notes exist but vault metadata is missing!
+                            // DO NOT create new vault -- show error
+                            Log.e(TAG, "[SAFETY_BLOCK] Notes exist in Firestore but vault metadata is MISSING. "
+                                    + "Blocking vault creation to prevent data loss.");
+                            btnAction.setEnabled(true);
+                            showError(getString(R.string.vault_metadata_missing_error));
+                            Toast.makeText(FirebaseLoginActivity.this,
+                                    getString(R.string.vault_metadata_missing_error),
+                                    Toast.LENGTH_LONG).show();
+                        } else {
+                            // No notes and no vault -- truly fresh user, go to CREATE mode
+                            Log.d(TAG, "[FRESH_USER] No notes and no vault, proceeding to MasterPasswordActivity CREATE mode");
+                            Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                            startActivity(intent);
+                            finish();
                         }
                     }
                 });
