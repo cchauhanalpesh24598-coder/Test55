@@ -5,7 +5,6 @@ import android.content.SharedPreferences;
 import android.util.Log;
 
 import com.google.firebase.firestore.FirebaseFirestore;
-import com.google.firebase.firestore.SetOptions;
 
 import com.mknotes.app.cloud.FirebaseAuthManager;
 
@@ -451,39 +450,62 @@ public class KeyManager {
 
     /**
      * Upload vault metadata to Firestore: users/{uid}/vault/crypto_metadata
+     * Uses set() (not add()) to ensure deterministic document path.
      */
     public void uploadVaultToFirestore() {
         try {
             FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
             if (!authManager.isLoggedIn()) {
-                Log.w(TAG, "Cannot upload vault: not logged in");
+                Log.w(TAG, "[VAULT_UPLOAD_FAILED] Not logged in, cannot upload vault");
                 return;
             }
             String uid = authManager.getUid();
             if (uid == null) {
+                Log.w(TAG, "[VAULT_UPLOAD_FAILED] UID is null");
                 return;
             }
 
+            String salt = prefs.getString(KEY_SALT, "");
+            String encDEK = prefs.getString(KEY_ENCRYPTED_DEK, "");
+            String tag = prefs.getString(KEY_VERIFY_TAG, "");
+            int iterations = getIterations();
+            int keyVersion = prefs.getInt(KEY_KEY_VERSION, 1);
+            long createdAt = prefs.getLong(KEY_CREATED_AT, System.currentTimeMillis());
+            long updatedAt = System.currentTimeMillis();
+
+            // Validate data before uploading
+            if (salt.length() == 0 || encDEK.length() == 0 || tag.length() == 0) {
+                Log.e(TAG, "[VAULT_UPLOAD_FAILED] Local vault data incomplete, aborting upload");
+                return;
+            }
+
+            Log.d(TAG, "[VAULT_UPLOAD_START] uid=" + uid
+                    + ", salt=" + salt.substring(0, Math.min(8, salt.length())) + "..."
+                    + ", iterations=" + iterations
+                    + ", keyVersion=" + keyVersion
+                    + ", encDEK_len=" + encDEK.length()
+                    + ", tag_len=" + tag.length());
+
             Map<String, Object> data = new HashMap<String, Object>();
-            data.put("salt", prefs.getString(KEY_SALT, ""));
-            data.put("encryptedDEK", prefs.getString(KEY_ENCRYPTED_DEK, ""));
-            data.put("verifyTag", prefs.getString(KEY_VERIFY_TAG, ""));
-            data.put("iterations", Integer.valueOf(getIterations()));
-            data.put("keyVersion", Integer.valueOf(prefs.getInt(KEY_KEY_VERSION, 1)));
-            data.put("createdAt", Long.valueOf(prefs.getLong(KEY_CREATED_AT, System.currentTimeMillis())));
-            data.put("updatedAt", Long.valueOf(System.currentTimeMillis()));
+            data.put("salt", salt);
+            data.put("encryptedDEK", encDEK);
+            data.put("verifyTag", tag);
+            data.put("iterations", Integer.valueOf(iterations));
+            data.put("keyVersion", Integer.valueOf(keyVersion));
+            data.put("createdAt", Long.valueOf(createdAt));
+            data.put("updatedAt", Long.valueOf(updatedAt));
 
             FirebaseFirestore.getInstance()
                     .collection("users").document(uid)
                     .collection("vault").document("crypto_metadata")
-                    .set(data, SetOptions.merge())
+                    .set(data)
                     .addOnSuccessListener(unused ->
-                            Log.d(TAG, "Vault metadata uploaded to Firestore"))
+                            Log.d(TAG, "[VAULT_UPLOAD_SUCCESS] Vault metadata uploaded to Firestore for uid=" + uid))
                     .addOnFailureListener(e ->
-                            Log.e(TAG, "Vault upload failed: " + e.getMessage()));
+                            Log.e(TAG, "[VAULT_UPLOAD_FAILED] Firestore write failed: " + e.getMessage()));
 
         } catch (Exception e) {
-            Log.e(TAG, "Vault upload exception: " + e.getMessage());
+            Log.e(TAG, "[VAULT_UPLOAD_FAILED] Exception: " + e.getMessage());
         }
     }
 
@@ -497,14 +519,18 @@ public class KeyManager {
         try {
             FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
             if (!authManager.isLoggedIn()) {
+                Log.w(TAG, "[VAULT_FETCH] Not logged in, skipping fetch");
                 if (callback != null) callback.onResult(false);
                 return;
             }
             String uid = authManager.getUid();
             if (uid == null) {
+                Log.w(TAG, "[VAULT_FETCH] UID is null, skipping fetch");
                 if (callback != null) callback.onResult(false);
                 return;
             }
+
+            Log.d(TAG, "[VAULT_FETCH] Fetching vault metadata from Firestore for uid=" + uid);
 
             FirebaseFirestore.getInstance()
                     .collection("users").document(uid)
@@ -530,7 +556,7 @@ public class KeyManager {
                                         keyVer = 1;
                                     }
 
-                                    Log.d(TAG, "[VAULT_FETCH] Found vault in Firestore: salt="
+                                    Log.d(TAG, "[VAULT_EXISTS] Found vault in Firestore: salt="
                                             + salt.substring(0, Math.min(8, salt.length()))
                                             + "..., iterations=" + iterations
                                             + ", encDEK_len=" + encDEK.length()
@@ -554,7 +580,7 @@ public class KeyManager {
                                 }
                             }
                         }
-                        Log.d(TAG, "No vault metadata found in Firestore");
+                        Log.d(TAG, "[VAULT_MISSING] No vault metadata found in Firestore");
                         if (callback != null) callback.onResult(false);
                     })
                     .addOnFailureListener(e -> {
@@ -564,6 +590,55 @@ public class KeyManager {
 
         } catch (Exception e) {
             Log.e(TAG, "Vault fetch exception: " + e.getMessage());
+            if (callback != null) callback.onResult(false);
+        }
+    }
+
+    // ======================== CLOUD NOTES CHECK ========================
+
+    /**
+     * Check if notes exist in Firestore at users/{uid}/notes.
+     * Used as a safety check before allowing vault creation.
+     * If notes exist but vault metadata is missing, creating a new vault would
+     * make those notes permanently undecryptable.
+     *
+     * @param callback called with true if notes exist, false otherwise
+     */
+    public void checkCloudNotesExist(final VaultFetchCallback callback) {
+        try {
+            FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
+            if (!authManager.isLoggedIn()) {
+                if (callback != null) callback.onResult(false);
+                return;
+            }
+            String uid = authManager.getUid();
+            if (uid == null) {
+                if (callback != null) callback.onResult(false);
+                return;
+            }
+
+            Log.d(TAG, "[NOTES_CHECK] Checking if notes exist in Firestore for uid=" + uid);
+
+            // Only fetch 1 document to check existence (limit(1) for efficiency)
+            FirebaseFirestore.getInstance()
+                    .collection("users").document(uid)
+                    .collection("notes")
+                    .limit(1)
+                    .get()
+                    .addOnSuccessListener(querySnapshot -> {
+                        boolean notesExist = querySnapshot != null && !querySnapshot.isEmpty();
+                        Log.d(TAG, "[NOTES_CHECK] Notes exist=" + notesExist
+                                + ", count=" + (querySnapshot != null ? querySnapshot.size() : 0));
+                        if (callback != null) callback.onResult(notesExist);
+                    })
+                    .addOnFailureListener(e -> {
+                        Log.e(TAG, "[NOTES_CHECK] Failed to check notes: " + e.getMessage());
+                        // On failure, assume notes might exist (safety first)
+                        if (callback != null) callback.onResult(false);
+                    });
+
+        } catch (Exception e) {
+            Log.e(TAG, "[NOTES_CHECK] Exception: " + e.getMessage());
             if (callback != null) callback.onResult(false);
         }
     }
