@@ -196,9 +196,9 @@ public class FirebaseLoginActivity extends AppCompatActivity {
     }
 
     /**
-     * SAFETY: Check if notes exist in Firestore BEFORE allowing vault creation.
-     * If notes exist but vault metadata is missing, we MUST NOT create a new vault
-     * because the new salt/DEK would make existing notes permanently undecryptable.
+     * Check if notes exist in Firestore BEFORE allowing vault creation.
+     * If notes exist but vault metadata is missing, redirect to MasterPasswordActivity
+     * which will handle legacy recovery mode (instead of blocking the user).
      */
     private void checkNotesBeforeCreate(final KeyManager km) {
         km.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
@@ -206,15 +206,15 @@ public class FirebaseLoginActivity extends AppCompatActivity {
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (notesExist) {
-                            // DANGER: Notes exist but vault metadata is missing!
-                            // DO NOT create new vault -- show error
-                            Log.e(TAG, "[SAFETY_BLOCK] Notes exist in Firestore but vault metadata is MISSING. "
-                                    + "Blocking vault creation to prevent data loss.");
-                            btnAction.setEnabled(true);
-                            showError(getString(R.string.vault_metadata_missing_error));
-                            Toast.makeText(FirebaseLoginActivity.this,
-                                    getString(R.string.vault_metadata_missing_error),
-                                    Toast.LENGTH_LONG).show();
+                            // Notes exist but vault metadata is missing
+                            // Redirect to MasterPasswordActivity which will offer legacy recovery
+                            Log.d(TAG, "[LEGACY_DETECTED] Notes exist in Firestore but vault metadata is MISSING. "
+                                    + "Redirecting to MasterPasswordActivity for legacy recovery.");
+                            Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
+                            intent.putExtra("legacy_recovery", true);
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                            startActivity(intent);
+                            finish();
                         } else {
                             // No notes and no vault -- truly fresh user, go to CREATE mode
                             Log.d(TAG, "[FRESH_USER] No notes and no vault, proceeding to MasterPasswordActivity CREATE mode");
