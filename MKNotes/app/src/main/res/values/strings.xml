@@ -413,4 +413,7 @@
     <string name="show_password">Show Password</string>
     <string name="decryption_failed_title">Decryption Failed</string>
     <string name="decryption_failed_message">Could not decrypt this note. Wrong Master Password or corrupted data.</string>
+
+    <!-- Vault Metadata Safety -->
+    <string name="vault_metadata_missing_error">Vault metadata missing. Cannot decrypt existing notes. Your encryption keys were not found in the cloud. Please contact support or restore from backup.</string>
 </resources>
