@@ -1,498 +1,853 @@
-package com.mknotes.app;
+package com.mknotes.app.crypto;
 
-import android.app.Activity;
-import android.content.Intent;
-import android.os.Build;
-import android.os.Bundle;
-import android.text.method.HideReturnsTransformationMethod;
-import android.text.method.PasswordTransformationMethod;
+import android.content.ContentValues;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.util.Log;
-import android.view.View;
-import android.view.Window;
-import android.view.WindowManager;
-import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.CompoundButton;
-import android.widget.EditText;
-import android.widget.TextView;
-import android.widget.Toast;
 
+import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FirebaseFirestore;
+import com.google.firebase.firestore.QueryDocumentSnapshot;
+import com.google.firebase.firestore.QuerySnapshot;
+import com.google.firebase.firestore.SetOptions;
+import com.google.firebase.firestore.WriteBatch;
 
 import com.mknotes.app.cloud.FirebaseAuthManager;
-import com.mknotes.app.crypto.CryptoManager;
-import com.mknotes.app.crypto.KeyManager;
-import com.mknotes.app.crypto.MigrationManager;
-import com.mknotes.app.db.NotesRepository;
+import com.mknotes.app.db.NotesDatabaseHelper;
 import com.mknotes.app.util.CryptoUtils;
-import com.mknotes.app.util.PrefsManager;
-import com.mknotes.app.util.SessionManager;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Gatekeeper activity that requires master password before allowing app access.
- * Two modes: CREATE (first launch) and UNLOCK (subsequent launches after session expiry).
+ * Handles migration from old single-layer encryption (master key directly encrypts notes)
+ * to new 2-layer DEK system (master key wraps DEK, DEK encrypts notes).
  *
- * Now supports:
- * - New 2-layer DEK vault system via KeyManager
- * - Migration from old single-layer system via MigrationManager
- * - Vault fetch from Firestore on reinstall/new device
- * - HMAC-based password verification (no encrypted-plaintext oracle)
+ * Migration steps:
+ * 1. Create full SQLite .db backup (notes.db -> notes.db.pre_migration.bak)
+ * 2. Derive old master key from password + old salt (old iterations)
+ * 3. Generate new DEK (byte[32])
+ * 4. In SQLite transaction: decrypt all notes with old key, re-encrypt with new DEK
+ * 5. Derive new master key with DEFAULT_ITERATIONS + new salt
+ * 6. Encrypt DEK with new master key, compute HMAC verifyTag
+ * 7. Store new vault metadata in Firestore + local SharedPreferences
+ * 8. Mark vault_version = 2
+ * 9. Delete backup ONLY after full success
+ *
+ * On failure: restore SQLite from backup, old data fully preserved.
  */
-public class MasterPasswordActivity extends Activity {
+public class MigrationManager {
 
-    private static final String TAG = "MasterPasswordActivity";
-    private static final int MODE_CREATE = 0;
-    private static final int MODE_UNLOCK = 1;
-
-    private int currentMode;
-    private SessionManager sessionManager;
-    private KeyManager keyManager;
-
-    private TextView toolbarTitle;
-    private TextView textSubtitle;
-    private EditText editPassword;
-    private EditText editConfirmPassword;
-    private TextView textError;
-    private TextView textStrengthHint;
-    private Button btnAction;
-    private CheckBox cbShowPassword;
-
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        sessionManager = SessionManager.getInstance(this);
-        keyManager = KeyManager.getInstance(this);
-
-        // If vault is initialized, unlocked, and session is valid -- skip to main
-        if (keyManager.isVaultInitialized() && keyManager.isVaultUnlocked()
-                && sessionManager.isSessionValid()) {
-            sessionManager.updateSessionTimestamp();
-            launchMain();
-            return;
-        }
-
-        // Also check old system for backward compat
-        if (!keyManager.isVaultInitialized() && sessionManager.isPasswordSet()
-                && sessionManager.hasKey() && sessionManager.isSessionValid()) {
-            sessionManager.updateSessionTimestamp();
-            launchMain();
-            return;
-        }
-
-        setContentView(R.layout.activity_master_password);
-        setupStatusBar();
-        initViews();
-
-        if (sessionManager.isPasswordSet()) {
-            setupUnlockMode();
-        } else {
-            // Check if vault exists in Firestore (reinstall scenario)
-            checkFirestoreVault();
-        }
-    }
-
-    private void setupStatusBar() {
-        if (Build.VERSION.SDK_INT >= 21) {
-            Window window = getWindow();
-            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-            window.setStatusBarColor(getResources().getColor(R.color.colorPrimaryDark));
-        }
-    }
-
-    private void initViews() {
-        toolbarTitle = (TextView) findViewById(R.id.toolbar_title);
-        textSubtitle = (TextView) findViewById(R.id.text_subtitle);
-        editPassword = (EditText) findViewById(R.id.edit_password);
-        editConfirmPassword = (EditText) findViewById(R.id.edit_confirm_password);
-        textError = (TextView) findViewById(R.id.text_error);
-        textStrengthHint = (TextView) findViewById(R.id.text_strength_hint);
-        btnAction = (Button) findViewById(R.id.btn_action);
-        cbShowPassword = (CheckBox) findViewById(R.id.cb_show_password);
-
-        // Show/Hide password toggle
-        if (cbShowPassword != null) {
-            cbShowPassword.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                    if (isChecked) {
-                        editPassword.setTransformationMethod(HideReturnsTransformationMethod.getInstance());
-                        if (editConfirmPassword.getVisibility() == View.VISIBLE) {
-                            editConfirmPassword.setTransformationMethod(HideReturnsTransformationMethod.getInstance());
-                        }
-                    } else {
-                        editPassword.setTransformationMethod(PasswordTransformationMethod.getInstance());
-                        if (editConfirmPassword.getVisibility() == View.VISIBLE) {
-                            editConfirmPassword.setTransformationMethod(PasswordTransformationMethod.getInstance());
-                        }
-                    }
-                    // Move cursor to end
-                    editPassword.setSelection(editPassword.getText().length());
-                    if (editConfirmPassword.getVisibility() == View.VISIBLE) {
-                        editConfirmPassword.setSelection(editConfirmPassword.getText().length());
-                    }
-                }
-            });
-        }
-    }
+    private static final String TAG = "MigrationManager";
+    private static final String DB_NAME = "mknotes.db";
+    private static final String BACKUP_SUFFIX = ".pre_migration.bak";
 
     /**
-     * Check if vault exists in Firestore (for reinstall/new device scenario).
-     * If found, switch to unlock mode. If not, check for orphan notes safety.
-     * SAFETY: Always tries Firestore before allowing create mode.
-     * If notes exist in cloud but vault metadata is missing, BLOCK vault creation.
+     * Perform full migration from old single-layer to new 2-layer DEK system.
+     *
+     * @param context  application context
+     * @param password user's master password (already verified via old system)
+     * @param oldSalt  old salt bytes (from old SessionManager)
+     * @param oldIterations old PBKDF2 iteration count
+     * @return true if migration succeeded
      */
-    private void checkFirestoreVault() {
-        // SAFETY: If vault already exists locally (e.g. partial fetch), go to unlock
-        if (keyManager.isVaultInitialized()) {
-            Log.d(TAG, "[VAULT_CHECK] Vault already initialized locally, going to unlock mode");
-            setupUnlockMode();
-            return;
+    public static boolean migrate(Context context, String password, byte[] oldSalt, int oldIterations) {
+        if (password == null || oldSalt == null) {
+            Log.e(TAG, "Migration failed: null password or salt");
+            return false;
         }
 
-        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
-        if (authManager.isLoggedIn()) {
-            // Show loading state
-            btnAction.setEnabled(false);
-            textSubtitle.setText("Fetching vault from cloud...");
+        File dbFile = context.getDatabasePath(DB_NAME);
+        File backupFile = new File(dbFile.getParentFile(), DB_NAME + BACKUP_SUFFIX);
 
-            keyManager.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
-                public void onResult(final boolean vaultFound) {
-                    runOnUiThread(new Runnable() {
-                        public void run() {
-                            if (vaultFound) {
-                                Log.d(TAG, "[VAULT_EXISTS] Vault found in Firestore, switching to UNLOCK mode");
-                                btnAction.setEnabled(true);
-                                setupUnlockMode();
-                            } else {
-                                Log.d(TAG, "[VAULT_MISSING] No vault in Firestore, checking for orphan notes...");
-                                // SAFETY CHECK: Before allowing create, check if notes exist
-                                checkCloudNotesBeforeCreate();
-                            }
-                        }
-                    });
-                }
-            });
-        } else {
-            // Not logged in -- show create mode (offline use)
-            Log.d(TAG, "[VAULT_CHECK] Not logged in, allowing create mode");
-            setupCreateMode();
-        }
-    }
+        byte[] oldMasterKey = null;
+        byte[] newDEK = null;
+        byte[] newMasterKey = null;
 
-    /**
-     * SAFETY: Check if notes exist in Firestore BEFORE allowing vault creation.
-     * If notes exist but vault metadata is missing, creating a new vault
-     * would generate a new salt/DEK, making all existing notes permanently undecryptable.
-     */
-    private void checkCloudNotesBeforeCreate() {
-        keyManager.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
-            public void onResult(final boolean notesExist) {
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        btnAction.setEnabled(true);
-                        if (notesExist) {
-                            // DANGER: Notes exist but vault metadata is missing!
-                            Log.e(TAG, "[SAFETY_BLOCK] Notes exist in Firestore but vault metadata is MISSING. "
-                                    + "Blocking new vault creation to prevent data loss.");
-                            setupErrorMode(getString(R.string.vault_metadata_missing_error));
-                        } else {
-                            // No notes, no vault -- truly fresh user, allow create
-                            Log.d(TAG, "[FRESH_USER] No notes and no vault in Firestore, allowing create mode");
-                            setupCreateMode();
-                        }
-                    }
-                });
-            }
-        });
-    }
-
-    /**
-     * Show an error state instead of create/unlock when vault metadata is missing
-     * but encrypted notes exist. User must NOT create a new vault in this scenario.
-     */
-    private void setupErrorMode(String errorMessage) {
-        toolbarTitle.setText(R.string.master_password_title_create);
-        textSubtitle.setText(errorMessage);
-        editPassword.setVisibility(View.GONE);
-        editConfirmPassword.setVisibility(View.GONE);
-        btnAction.setVisibility(View.GONE);
-        if (cbShowPassword != null) cbShowPassword.setVisibility(View.GONE);
-        if (textStrengthHint != null) textStrengthHint.setVisibility(View.GONE);
-        textError.setText(errorMessage);
-        textError.setVisibility(View.VISIBLE);
-    }
-
-    private void setupCreateMode() {
-        currentMode = MODE_CREATE;
-        toolbarTitle.setText(R.string.master_password_title_create);
-        textSubtitle.setText(R.string.master_password_subtitle_create);
-        editConfirmPassword.setVisibility(View.VISIBLE);
-        textStrengthHint.setVisibility(View.VISIBLE);
-        btnAction.setText(R.string.master_password_btn_create);
-        textError.setVisibility(View.GONE);
-
-        btnAction.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                handleCreate();
-            }
-        });
-    }
-
-    private void setupUnlockMode() {
-        currentMode = MODE_UNLOCK;
-        toolbarTitle.setText(R.string.master_password_title_unlock);
-        textSubtitle.setText(R.string.master_password_subtitle_unlock);
-        editConfirmPassword.setVisibility(View.GONE);
-        textStrengthHint.setVisibility(View.GONE);
-        btnAction.setText(R.string.master_password_btn_unlock);
-        textError.setVisibility(View.GONE);
-
-        btnAction.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                handleUnlock();
-            }
-        });
-    }
-
-    private void handleCreate() {
-        String password = editPassword.getText().toString();
-        String confirm = editConfirmPassword.getText().toString();
-
-        if (password.length() < 8) {
-            showError(getString(R.string.master_password_error_short));
-            return;
-        }
-
-        if (!password.equals(confirm)) {
-            showError(getString(R.string.master_password_error_mismatch));
-            return;
-        }
-
-        // SAFETY CHECK: If vault already exists locally, do NOT create new one
-        if (keyManager.isVaultInitialized()) {
-            Log.w(TAG, "[SAFETY_BLOCK] handleCreate() blocked: vault already exists locally. Switching to unlock mode.");
-            setupUnlockMode();
-            return;
-        }
-
-        btnAction.setEnabled(false);
-        textSubtitle.setText("Creating vault...");
-
-        // SAFETY CHECK: Double-check Firestore before creating vault
-        // This prevents race conditions where vault was uploaded between fetch and create
-        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
-        if (authManager.isLoggedIn()) {
-            Log.d(TAG, "[VAULT_CREATE] Double-checking Firestore before vault creation...");
-            final String pwd = password;
-            keyManager.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
-                public void onResult(final boolean vaultFound) {
-                    runOnUiThread(new Runnable() {
-                        public void run() {
-                            if (vaultFound) {
-                                // Vault appeared in Firestore -- switch to unlock, do NOT create
-                                Log.w(TAG, "[SAFETY_BLOCK] Vault found in Firestore during create! Switching to unlock mode.");
-                                btnAction.setEnabled(true);
-                                textSubtitle.setText(R.string.master_password_subtitle_unlock);
-                                setupUnlockMode();
-                            } else {
-                                // Also check if notes exist (orphan notes safety)
-                                keyManager.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
-                                    public void onResult(final boolean notesExist) {
-                                        runOnUiThread(new Runnable() {
-                                            public void run() {
-                                                if (notesExist) {
-                                                    // DANGER: Notes exist without vault metadata
-                                                    Log.e(TAG, "[SAFETY_BLOCK] Notes exist in cloud but no vault metadata. "
-                                                            + "Refusing to create new vault.");
-                                                    btnAction.setEnabled(true);
-                                                    showError(getString(R.string.vault_metadata_missing_error));
-                                                } else {
-                                                    // All clear -- proceed with vault creation
-                                                    performVaultCreation(pwd);
-                                                }
-                                            }
-                                        });
-                                    }
-                                });
-                            }
-                        }
-                    });
-                }
-            });
-        } else {
-            // Not logged in -- safe to create locally
-            Log.d(TAG, "[VAULT_CREATE] Not logged in, creating vault locally");
-            performVaultCreation(password);
-        }
-    }
-
-    /**
-     * Actually create the vault after all safety checks have passed.
-     */
-    private void performVaultCreation(String password) {
-        Log.d(TAG, "[VAULT_CREATE] All safety checks passed, initializing vault...");
-        boolean success = keyManager.initializeVault(password);
-        if (success) {
-            Log.d(TAG, "[VAULT_CREATE] Vault initialized successfully");
-            sessionManager.setPasswordSetFlag(true);
-            sessionManager.updateSessionTimestamp();
-            sessionManager.setEncryptionMigrated(true);
-
-            // Migrate existing plaintext notes if any
-            migrateExistingPlaintextNotes();
-
-            Toast.makeText(this, R.string.master_password_set_success, Toast.LENGTH_SHORT).show();
-            launchMain();
-        } else {
-            Log.e(TAG, "[VAULT_CREATE] initializeVault() returned false");
-            btnAction.setEnabled(true);
-            showError(getString(R.string.master_password_error_generic));
-        }
-    }
-
-    private void handleUnlock() {
-        String password = editPassword.getText().toString();
-
-        if (password.length() == 0) {
-            showError(getString(R.string.master_password_error_empty));
-            return;
-        }
-
-        btnAction.setEnabled(false);
-
-        // Check if this is new 2-layer system or old system needing migration
-        if (keyManager.isVaultInitialized() && keyManager.getVaultVersion() >= KeyManager.CURRENT_VAULT_VERSION) {
-            // New system: unlock via KeyManager (HMAC verification)
-            Log.d(TAG, "Attempting unlock with new 2-layer system");
-            boolean valid = keyManager.unlockVault(password);
-            if (valid) {
-                sessionManager.setPasswordSetFlag(true);
-                sessionManager.updateSessionTimestamp();
-                sessionManager.setEncryptionMigrated(true);
-                launchMain();
-            } else {
-                btnAction.setEnabled(true);
-                showError(getString(R.string.master_password_error_wrong));
-                editPassword.setText("");
-            }
-        } else if (sessionManager.hasOldSystemCredentials()) {
-            // Old system: verify with old method, then migrate to new system
-            Log.d(TAG, "Attempting unlock with old system + migration");
-            handleOldSystemUnlock(password);
-        } else if (keyManager.isVaultInitialized()) {
-            // Vault from Firestore (reinstall) -- try unlock
-            Log.d(TAG, "Attempting unlock with Firestore vault (reinstall scenario)");
-            boolean valid = keyManager.unlockVault(password);
-            if (valid) {
-                sessionManager.setPasswordSetFlag(true);
-                sessionManager.updateSessionTimestamp();
-                sessionManager.setEncryptionMigrated(true);
-                launchMain();
-            } else {
-                btnAction.setEnabled(true);
-                showError(getString(R.string.master_password_error_wrong));
-                editPassword.setText("");
-            }
-        } else {
-            btnAction.setEnabled(true);
-            showError(getString(R.string.master_password_error_generic));
-        }
-    }
-
-    /**
-     * Handle unlock with old single-layer system, then migrate to new DEK system.
-     */
-    private void handleOldSystemUnlock(String password) {
-        // Verify with old CryptoUtils system
-        String saltHex = sessionManager.getOldSaltHex();
-        String verifyToken = sessionManager.getOldVerifyToken();
-        int oldIterations = sessionManager.getOldIterations();
-
-        if (saltHex == null || verifyToken == null) {
-            btnAction.setEnabled(true);
-            showError(getString(R.string.master_password_error_generic));
-            return;
-        }
-
-        byte[] oldSalt = CryptoUtils.hexToBytes(saltHex);
-        byte[] tempKey = CryptoUtils.deriveKey(password, oldSalt);
-
-        if (tempKey == null) {
-            btnAction.setEnabled(true);
-            showError(getString(R.string.master_password_error_generic));
-            return;
-        }
-
-        boolean valid = CryptoUtils.verifyKeyWithToken(tempKey, verifyToken);
-        CryptoManager.zeroFill(tempKey);
-
-        if (!valid) {
-            btnAction.setEnabled(true);
-            showError(getString(R.string.master_password_error_wrong));
-            editPassword.setText("");
-            return;
-        }
-
-        // Old password verified -- now migrate to new 2-layer DEK system
-        sessionManager.updateSessionTimestamp();
-
-        boolean migrated = MigrationManager.migrate(this, password, oldSalt, oldIterations);
-        if (migrated) {
-            // Migration successful -- clear old credentials
-            sessionManager.clearOldCredentials();
-            sessionManager.setEncryptionMigrated(true);
-            Toast.makeText(this, R.string.master_password_set_success, Toast.LENGTH_SHORT).show();
-            launchMain();
-        } else {
-            // Migration failed -- old data preserved via backup restore
-            // Still allow access with old system for now
-            btnAction.setEnabled(true);
-            showError("Migration failed. Please try again.");
-        }
-    }
-
-    /**
-     * Migrate existing plaintext notes to encrypted format (for first-time setup).
-     * Uses new DEK from KeyManager.
-     */
-    private void migrateExistingPlaintextNotes() {
         try {
-            byte[] dek = keyManager.getDEK();
-            if (dek == null) {
+            // Step 1: Create full SQLite .db backup
+            if (!createDatabaseBackup(dbFile, backupFile)) {
+                Log.e(TAG, "Migration failed: could not create database backup");
+                return false;
+            }
+            Log.d(TAG, "Database backup created: " + backupFile.getAbsolutePath());
+
+            // Step 2: Derive old master key
+            oldMasterKey = CryptoUtils.deriveKey(password, oldSalt);
+            if (oldMasterKey == null) {
+                Log.e(TAG, "Migration failed: could not derive old master key");
+                restoreBackup(dbFile, backupFile);
+                return false;
+            }
+
+            // Step 3: Generate new DEK
+            newDEK = CryptoManager.generateDEK();
+
+            // Step 4: Re-encrypt all notes in SQLite transaction
+            boolean reEncryptSuccess = reEncryptAllData(context, oldMasterKey, newDEK);
+            if (!reEncryptSuccess) {
+                Log.e(TAG, "Migration failed: re-encryption failed, restoring backup");
+                CryptoManager.zeroFill(oldMasterKey);
+                oldMasterKey = null;
+                restoreBackup(dbFile, backupFile);
+                return false;
+            }
+
+            // Zero-fill old master key immediately after re-encryption
+            CryptoManager.zeroFill(oldMasterKey);
+            oldMasterKey = null;
+
+            // Step 5: Derive new master key with DEFAULT_ITERATIONS + new salt
+            byte[] newSalt = CryptoManager.generateSalt();
+            int newIterations = CryptoManager.DEFAULT_ITERATIONS;
+
+            newMasterKey = CryptoManager.deriveKey(password, newSalt, newIterations);
+            if (newMasterKey == null) {
+                Log.e(TAG, "Migration failed: could not derive new master key");
+                restoreBackup(dbFile, backupFile);
+                return false;
+            }
+
+            // Step 6: Encrypt DEK with new master key
+            String encryptedDEK = CryptoManager.encryptDEK(newDEK, newMasterKey);
+            if (encryptedDEK == null) {
+                Log.e(TAG, "Migration failed: could not encrypt DEK");
+                CryptoManager.zeroFill(newMasterKey);
+                restoreBackup(dbFile, backupFile);
+                return false;
+            }
+
+            // Compute HMAC verify tag
+            String verifyTag = CryptoManager.computeVerifyTag(newMasterKey);
+            if (verifyTag == null) {
+                Log.e(TAG, "Migration failed: could not compute verify tag");
+                CryptoManager.zeroFill(newMasterKey);
+                restoreBackup(dbFile, backupFile);
+                return false;
+            }
+
+            // Zero-fill new master key immediately
+            CryptoManager.zeroFill(newMasterKey);
+            newMasterKey = null;
+
+            String newSaltHex = CryptoManager.bytesToHex(newSalt);
+
+            // Step 7: Store new vault metadata
+            KeyManager km = KeyManager.getInstance(context);
+            km.storeVaultLocally(newSaltHex, encryptedDEK, verifyTag, newIterations, 1);
+            km.uploadVaultToFirestore();
+
+            // Cache DEK in KeyManager
+            km.setCachedDEK(newDEK);
+            newDEK = null; // Prevent zeroFill in finally
+
+            Log.d(TAG, "Migration completed successfully");
+
+            // Step 9: Delete backup after full success
+            if (backupFile.exists()) {
+                boolean deleted = backupFile.delete();
+                Log.d(TAG, "Backup file deleted: " + deleted);
+            }
+
+            return true;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Migration exception: " + e.getMessage());
+            // Restore backup on any unexpected failure
+            restoreBackup(dbFile, backupFile);
+            return false;
+        } finally {
+            CryptoManager.zeroFill(oldMasterKey);
+            CryptoManager.zeroFill(newMasterKey);
+            if (newDEK != null) {
+                CryptoManager.zeroFill(newDEK);
+            }
+        }
+    }
+
+    /**
+     * Re-encrypt all notes and trash data within a SQLite transaction.
+     * Decrypts with oldKey (old CryptoUtils), encrypts with newDEK (new CryptoManager).
+     */
+    private static boolean reEncryptAllData(Context context, byte[] oldKey, byte[] newDEK) {
+        NotesDatabaseHelper dbHelper = NotesDatabaseHelper.getInstance(context);
+        SQLiteDatabase db = dbHelper.getWritableDatabase();
+
+        db.beginTransaction();
+        try {
+            // Re-encrypt notes table
+            Cursor cursor = db.query(NotesDatabaseHelper.TABLE_NOTES,
+                    null, null, null, null, null, null);
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    long id = cursor.getLong(cursor.getColumnIndex(NotesDatabaseHelper.COL_ID));
+                    String encTitle = cursor.getString(cursor.getColumnIndex(NotesDatabaseHelper.COL_TITLE));
+                    String encContent = cursor.getString(cursor.getColumnIndex(NotesDatabaseHelper.COL_CONTENT));
+
+                    String encChecklist = "";
+                    int clIdx = cursor.getColumnIndex(NotesDatabaseHelper.COL_CHECKLIST_DATA);
+                    if (clIdx >= 0) encChecklist = cursor.getString(clIdx);
+
+                    String encRoutine = "";
+                    int rtIdx = cursor.getColumnIndex(NotesDatabaseHelper.COL_ROUTINE_DATA);
+                    if (rtIdx >= 0) encRoutine = cursor.getString(rtIdx);
+
+                    // Decrypt with old master key (using old CryptoUtils)
+                    String plainTitle = CryptoUtils.decrypt(encTitle, oldKey);
+                    String plainContent = CryptoUtils.decrypt(encContent, oldKey);
+                    String plainChecklist = CryptoUtils.decrypt(encChecklist, oldKey);
+                    String plainRoutine = CryptoUtils.decrypt(encRoutine, oldKey);
+
+                    // Encrypt with new DEK (using new CryptoManager)
+                    ContentValues values = new ContentValues();
+                    values.put(NotesDatabaseHelper.COL_TITLE, encryptSafe(plainTitle, newDEK));
+                    values.put(NotesDatabaseHelper.COL_CONTENT, encryptSafe(plainContent, newDEK));
+                    values.put(NotesDatabaseHelper.COL_CHECKLIST_DATA, encryptSafe(plainChecklist, newDEK));
+                    values.put(NotesDatabaseHelper.COL_ROUTINE_DATA, encryptSafe(plainRoutine, newDEK));
+                    values.put(NotesDatabaseHelper.COL_SEARCH_INDEX, "");
+
+                    db.update(NotesDatabaseHelper.TABLE_NOTES, values,
+                            NotesDatabaseHelper.COL_ID + "=?",
+                            new String[]{String.valueOf(id)});
+                }
+                cursor.close();
+            }
+
+            // Re-encrypt trash table
+            Cursor trashCursor = db.query(NotesDatabaseHelper.TABLE_TRASH,
+                    null, null, null, null, null, null);
+            if (trashCursor != null) {
+                while (trashCursor.moveToNext()) {
+                    long id = trashCursor.getLong(trashCursor.getColumnIndex(NotesDatabaseHelper.COL_TRASH_ID));
+                    String encTitle = trashCursor.getString(trashCursor.getColumnIndex(NotesDatabaseHelper.COL_TRASH_NOTE_TITLE));
+                    String encContent = trashCursor.getString(trashCursor.getColumnIndex(NotesDatabaseHelper.COL_TRASH_NOTE_CONTENT));
+
+                    String encChecklist = "";
+                    int clIdx = trashCursor.getColumnIndex(NotesDatabaseHelper.COL_TRASH_CHECKLIST_DATA);
+                    if (clIdx >= 0) encChecklist = trashCursor.getString(clIdx);
+
+                    // Decrypt with old key
+                    String plainTitle = CryptoUtils.decrypt(encTitle, oldKey);
+                    String plainContent = CryptoUtils.decrypt(encContent, oldKey);
+                    String plainChecklist = CryptoUtils.decrypt(encChecklist, oldKey);
+
+                    // Encrypt with new DEK
+                    ContentValues values = new ContentValues();
+                    values.put(NotesDatabaseHelper.COL_TRASH_NOTE_TITLE, encryptSafe(plainTitle, newDEK));
+                    values.put(NotesDatabaseHelper.COL_TRASH_NOTE_CONTENT, encryptSafe(plainContent, newDEK));
+                    values.put(NotesDatabaseHelper.COL_TRASH_CHECKLIST_DATA, encryptSafe(plainChecklist, newDEK));
+
+                    db.update(NotesDatabaseHelper.TABLE_TRASH, values,
+                            NotesDatabaseHelper.COL_TRASH_ID + "=?",
+                            new String[]{String.valueOf(id)});
+                }
+                trashCursor.close();
+            }
+
+            db.setTransactionSuccessful();
+            return true;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Re-encryption failed: " + e.getMessage());
+            return false;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    /**
+     * Encrypt a field safely with new DEK.
+     */
+    private static String encryptSafe(String plaintext, byte[] dek) {
+        if (plaintext == null || plaintext.length() == 0) {
+            return "";
+        }
+        String encrypted = CryptoManager.encrypt(plaintext, dek);
+        return encrypted != null ? encrypted : plaintext;
+    }
+
+    /**
+     * Create a file-level copy of the SQLite database.
+     */
+    private static boolean createDatabaseBackup(File source, File destination) {
+        if (!source.exists()) {
+            return false;
+        }
+        FileInputStream fis = null;
+        FileOutputStream fos = null;
+        FileChannel inChannel = null;
+        FileChannel outChannel = null;
+        try {
+            fis = new FileInputStream(source);
+            fos = new FileOutputStream(destination);
+            inChannel = fis.getChannel();
+            outChannel = fos.getChannel();
+            inChannel.transferTo(0, inChannel.size(), outChannel);
+            return true;
+        } catch (IOException e) {
+            Log.e(TAG, "Backup copy failed: " + e.getMessage());
+            return false;
+        } finally {
+            closeQuietly(inChannel);
+            closeQuietly(outChannel);
+            closeQuietly(fis);
+            closeQuietly(fos);
+        }
+    }
+
+    /**
+     * Restore database from backup file.
+     */
+    private static void restoreBackup(File dbFile, File backupFile) {
+        if (!backupFile.exists()) {
+            Log.e(TAG, "Cannot restore: backup file does not exist");
+            return;
+        }
+        try {
+            // Delete corrupted db
+            if (dbFile.exists()) {
+                dbFile.delete();
+            }
+            // Rename backup to original
+            boolean renamed = backupFile.renameTo(dbFile);
+            if (renamed) {
+                Log.d(TAG, "Database restored from backup");
+            } else {
+                // Fallback: copy instead of rename
+                createDatabaseBackup(backupFile, dbFile);
+                backupFile.delete();
+                Log.d(TAG, "Database restored from backup (copy fallback)");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Restore from backup failed: " + e.getMessage());
+        }
+    }
+
+    private static void closeQuietly(java.io.Closeable closeable) {
+        if (closeable != null) {
+            try {
+                closeable.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    // ======================== LEGACY CLOUD-ONLY MIGRATION ========================
+
+    /**
+     * Callback for async legacy migration operations.
+     */
+    public interface LegacyMigrationCallback {
+        void onSuccess();
+        void onFailure(String error);
+    }
+
+    /**
+     * Verify if a legacy master password can decrypt a sample cloud note.
+     * Fetches one note from Firestore, tries decrypting with legacy key.
+     *
+     * @param context  application context
+     * @param password user's master password
+     * @param callback called with result
+     */
+    public static void verifyLegacyPassword(final Context context, final String password,
+                                             final LegacyMigrationCallback callback) {
+        Log.d(TAG, "[LEGACY_VERIFY] Starting legacy password verification");
+
+        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(context);
+        if (!authManager.isLoggedIn() || authManager.getUid() == null) {
+            Log.e(TAG, "[LEGACY_VERIFY] Not logged in");
+            if (callback != null) callback.onFailure("Not logged in");
+            return;
+        }
+        final String uid = authManager.getUid();
+
+        // Fetch one note to test decryption
+        FirebaseFirestore.getInstance()
+                .collection("users").document(uid)
+                .collection("notes")
+                .limit(1)
+                .get()
+                .addOnSuccessListener(querySnapshot -> {
+                    if (querySnapshot == null || querySnapshot.isEmpty()) {
+                        Log.e(TAG, "[LEGACY_VERIFY] No notes found to verify against");
+                        if (callback != null) callback.onFailure("No notes found for verification");
+                        return;
+                    }
+
+                    DocumentSnapshot doc = querySnapshot.getDocuments().get(0);
+                    Map<String, Object> data = doc.getData();
+                    if (data == null) {
+                        if (callback != null) callback.onFailure("Note data is null");
+                        return;
+                    }
+
+                    // Try to find an encrypted field (title or content)
+                    String sampleEncrypted = getEncryptedField(data);
+                    if (sampleEncrypted == null) {
+                        Log.w(TAG, "[LEGACY_VERIFY] No encrypted field found in sample note, assuming plaintext notes");
+                        // Notes might be plaintext -- allow migration anyway
+                        if (callback != null) callback.onSuccess();
+                        return;
+                    }
+
+                    // Derive legacy key using CryptoUtils parameters (PBKDF2, 15000 iterations)
+                    // Old system used CryptoUtils.deriveKey(password, salt) with 15000 iterations
+                    // The salt was stored in SessionManager SharedPreferences locally
+                    // For cloud-only scenario (no local prefs), we try multiple approaches:
+
+                    byte[] legacyKey = null;
+                    boolean decryptSuccess = false;
+
+                    try {
+                        // Approach 1: Try deriving key using salt from local SessionManager (if available)
+                        com.mknotes.app.util.SessionManager sm = com.mknotes.app.util.SessionManager.getInstance(context);
+                        String oldSaltHex = sm.getOldSaltHex();
+
+                        if (oldSaltHex != null) {
+                            Log.d(TAG, "[LEGACY_VERIFY] Trying with local old salt");
+                            byte[] oldSalt = CryptoUtils.hexToBytes(oldSaltHex);
+                            legacyKey = CryptoUtils.deriveKey(password, oldSalt);
+                            if (legacyKey != null) {
+                                String result = CryptoManager.decryptWithLegacyKey(sampleEncrypted, legacyKey);
+                                if (result != null) {
+                                    decryptSuccess = true;
+                                    Log.d(TAG, "[LEGACY_VERIFY] Decrypt SUCCESS with local old salt");
+                                }
+                                CryptoManager.zeroFill(legacyKey);
+                                legacyKey = null;
+                            }
+                        }
+
+                        // Approach 2: If the note has a salt field stored alongside it
+                        if (!decryptSuccess) {
+                            Object saltObj = data.get("salt");
+                            if (saltObj instanceof String && ((String) saltObj).length() > 0) {
+                                Log.d(TAG, "[LEGACY_VERIFY] Trying with note-embedded salt");
+                                byte[] noteSalt = CryptoManager.hexToBytes((String) saltObj);
+                                legacyKey = CryptoUtils.deriveKey(password, noteSalt);
+                                if (legacyKey != null) {
+                                    String result = CryptoManager.decryptWithLegacyKey(sampleEncrypted, legacyKey);
+                                    if (result != null) {
+                                        decryptSuccess = true;
+                                        Log.d(TAG, "[LEGACY_VERIFY] Decrypt SUCCESS with note-embedded salt");
+                                    }
+                                    CryptoManager.zeroFill(legacyKey);
+                                    legacyKey = null;
+                                }
+                            }
+                        }
+
+                        // Approach 3: Try using CryptoManager.deriveKey with legacy iterations
+                        // Some old versions may have stored salt differently
+                        if (!decryptSuccess && oldSaltHex != null) {
+                            Log.d(TAG, "[LEGACY_VERIFY] Trying with CryptoManager.deriveLegacyKey");
+                            byte[] oldSalt = CryptoManager.hexToBytes(oldSaltHex);
+                            legacyKey = CryptoManager.deriveLegacyKey(password, oldSalt);
+                            if (legacyKey != null) {
+                                String result = CryptoManager.decryptWithLegacyKey(sampleEncrypted, legacyKey);
+                                if (result != null) {
+                                    decryptSuccess = true;
+                                    Log.d(TAG, "[LEGACY_VERIFY] Decrypt SUCCESS with CryptoManager legacy key");
+                                }
+                                CryptoManager.zeroFill(legacyKey);
+                                legacyKey = null;
+                            }
+                        }
+
+                        if (decryptSuccess) {
+                            if (callback != null) callback.onSuccess();
+                        } else {
+                            Log.w(TAG, "[LEGACY_VERIFY] All decryption attempts FAILED");
+                            if (callback != null) callback.onFailure("Wrong master password or incompatible encryption");
+                        }
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "[LEGACY_VERIFY] Exception: " + e.getMessage());
+                        CryptoManager.zeroFill(legacyKey);
+                        if (callback != null) callback.onFailure("Verification error: " + e.getMessage());
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "[LEGACY_VERIFY] Firestore fetch failed: " + e.getMessage());
+                    if (callback != null) callback.onFailure("Could not fetch notes: " + e.getMessage());
+                });
+    }
+
+    /**
+     * Perform full legacy cloud migration:
+     * 1. Derive legacy key from password
+     * 2. Generate new DEK + salt + vault metadata
+     * 3. Fetch ALL cloud notes
+     * 4. Decrypt each note with legacy key, re-encrypt with new DEK
+     * 5. Batch upload re-encrypted notes to Firestore
+     * 6. Upload new vault metadata
+     *
+     * Does NOT overwrite notes until all re-encryption succeeds.
+     * Does NOT delete originals -- overwrites in-place.
+     *
+     * @param context  application context
+     * @param password user's master password (already verified via verifyLegacyPassword)
+     * @param callback called with result
+     */
+    public static void migrateLegacyCloudNotes(final Context context, final String password,
+                                                final LegacyMigrationCallback callback) {
+        Log.d(TAG, "[MIGRATION_START] Starting legacy cloud-only migration");
+
+        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(context);
+        if (!authManager.isLoggedIn() || authManager.getUid() == null) {
+            Log.e(TAG, "[MIGRATION_FAILED] Not logged in");
+            if (callback != null) callback.onFailure("Not logged in");
+            return;
+        }
+        final String uid = authManager.getUid();
+
+        // Step 1: Derive legacy key
+        com.mknotes.app.util.SessionManager sm = com.mknotes.app.util.SessionManager.getInstance(context);
+        String oldSaltHex = sm.getOldSaltHex();
+
+        // We need the salt to derive the legacy key. Find it from available sources.
+        // Run on background thread since PBKDF2 is CPU-intensive
+        new Thread(() -> {
+            byte[] legacyKey = null;
+            byte[] newDEK = null;
+            byte[] newMasterKey = null;
+
+            try {
+                // Derive legacy key -- try the same approaches as verification
+                legacyKey = deriveLegacyKeyFromAvailableSources(context, password, oldSaltHex);
+
+                if (legacyKey == null) {
+                    Log.e(TAG, "[MIGRATION_FAILED] Could not derive legacy key");
+                    postCallback(context, callback, false, "Could not derive legacy encryption key");
+                    return;
+                }
+
+                // Step 2: Generate new DEK, salt, master key
+                newDEK = CryptoManager.generateDEK();
+                byte[] newSalt = CryptoManager.generateSalt();
+                int newIterations = CryptoManager.DEFAULT_ITERATIONS;
+
+                newMasterKey = CryptoManager.deriveKey(password, newSalt, newIterations);
+                if (newMasterKey == null) {
+                    Log.e(TAG, "[MIGRATION_FAILED] Could not derive new master key");
+                    CryptoManager.zeroFill(legacyKey);
+                    postCallback(context, callback, false, "Could not derive new master key");
+                    return;
+                }
+
+                // Encrypt DEK with new master key
+                String encryptedDEK = CryptoManager.encryptDEK(newDEK, newMasterKey);
+                if (encryptedDEK == null) {
+                    Log.e(TAG, "[MIGRATION_FAILED] Could not encrypt DEK");
+                    CryptoManager.zeroFill(legacyKey);
+                    CryptoManager.zeroFill(newMasterKey);
+                    postCallback(context, callback, false, "Could not encrypt DEK");
+                    return;
+                }
+
+                // Compute HMAC verify tag
+                String verifyTag = CryptoManager.computeVerifyTag(newMasterKey);
+                if (verifyTag == null) {
+                    Log.e(TAG, "[MIGRATION_FAILED] Could not compute verify tag");
+                    CryptoManager.zeroFill(legacyKey);
+                    CryptoManager.zeroFill(newMasterKey);
+                    postCallback(context, callback, false, "Could not compute verify tag");
+                    return;
+                }
+
+                // Zero-fill new master key immediately
+                CryptoManager.zeroFill(newMasterKey);
+                newMasterKey = null;
+
+                String newSaltHex = CryptoManager.bytesToHex(newSalt);
+
+                // Step 3: Fetch ALL cloud notes and re-encrypt
+                final byte[] finalLegacyKey = legacyKey;
+                final byte[] finalNewDEK = newDEK;
+                final String finalEncDEK = encryptedDEK;
+                final String finalVerifyTag = verifyTag;
+                final String finalSaltHex = newSaltHex;
+                final int finalIterations = newIterations;
+
+                // Prevent legacyKey/newDEK from being zeroed in finally
+                legacyKey = null;
+                newDEK = null;
+
+                FirebaseFirestore.getInstance()
+                        .collection("users").document(uid)
+                        .collection("notes")
+                        .get()
+                        .addOnSuccessListener(querySnapshot -> {
+                            // Process on background thread
+                            new Thread(() -> {
+                                try {
+                                    reEncryptAndUploadCloudNotes(
+                                            context, uid, querySnapshot,
+                                            finalLegacyKey, finalNewDEK,
+                                            finalEncDEK, finalVerifyTag,
+                                            finalSaltHex, finalIterations,
+                                            callback
+                                    );
+                                } finally {
+                                    CryptoManager.zeroFill(finalLegacyKey);
+                                    // Do NOT zero finalNewDEK -- it's cached in KeyManager
+                                }
+                            }).start();
+                        })
+                        .addOnFailureListener(e -> {
+                            Log.e(TAG, "[MIGRATION_FAILED] Could not fetch cloud notes: " + e.getMessage());
+                            CryptoManager.zeroFill(finalLegacyKey);
+                            CryptoManager.zeroFill(finalNewDEK);
+                            postCallback(context, callback, false, "Could not fetch cloud notes: " + e.getMessage());
+                        });
+
+            } catch (Exception e) {
+                Log.e(TAG, "[MIGRATION_FAILED] Exception: " + e.getMessage());
+                CryptoManager.zeroFill(legacyKey);
+                CryptoManager.zeroFill(newDEK);
+                CryptoManager.zeroFill(newMasterKey);
+                postCallback(context, callback, false, "Migration error: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    /**
+     * Re-encrypt all cloud notes and upload to Firestore.
+     * Creates a backup map of original data before overwriting.
+     */
+    private static void reEncryptAndUploadCloudNotes(
+            Context context, String uid, QuerySnapshot querySnapshot,
+            byte[] legacyKey, byte[] newDEK,
+            String encryptedDEK, String verifyTag,
+            String newSaltHex, int newIterations,
+            LegacyMigrationCallback callback) {
+
+        int totalNotes = querySnapshot.size();
+        Log.d(TAG, "[MIGRATION_PROGRESS] Re-encrypting " + totalNotes + " cloud notes");
+
+        List<Map<String, Object>> reEncryptedNotes = new ArrayList<>();
+        List<String> noteIds = new ArrayList<>();
+        int successCount = 0;
+        int failCount = 0;
+        int skipCount = 0;
+
+        for (QueryDocumentSnapshot doc : querySnapshot) {
+            String docId = doc.getId();
+            Map<String, Object> data = doc.getData();
+
+            if (data == null) {
+                skipCount++;
+                continue;
+            }
+
+            // Check if note is soft-deleted
+            Object deletedObj = data.get("isDeleted");
+            if (deletedObj instanceof Boolean && ((Boolean) deletedObj).booleanValue()) {
+                // Keep deleted notes as-is
+                skipCount++;
+                continue;
+            }
+
+            try {
+                Map<String, Object> reEncrypted = new HashMap<>(data);
+
+                // Re-encrypt each encrypted field
+                reEncrypted.put("title", reEncryptField(data, "title", legacyKey, newDEK));
+                reEncrypted.put("content", reEncryptField(data, "content", legacyKey, newDEK));
+
+                // Optional fields
+                if (data.containsKey("checklistData")) {
+                    reEncrypted.put("checklistData", reEncryptField(data, "checklistData", legacyKey, newDEK));
+                }
+                if (data.containsKey("routineData")) {
+                    reEncrypted.put("routineData", reEncryptField(data, "routineData", legacyKey, newDEK));
+                }
+
+                // Update modifiedAt
+                reEncrypted.put("modifiedAt", Long.valueOf(System.currentTimeMillis()));
+
+                reEncryptedNotes.add(reEncrypted);
+                noteIds.add(docId);
+                successCount++;
+
+            } catch (Exception e) {
+                Log.e(TAG, "[MIGRATION_PROGRESS] Failed to re-encrypt note " + docId + ": " + e.getMessage());
+                failCount++;
+            }
+        }
+
+        Log.d(TAG, "[MIGRATION_PROGRESS] Re-encryption complete: success=" + successCount
+                + ", fail=" + failCount + ", skip=" + skipCount);
+
+        if (failCount > 0 && successCount == 0) {
+            Log.e(TAG, "[MIGRATION_FAILED] All note re-encryptions failed");
+            postCallback(context, callback, false, "Could not re-encrypt any notes. Wrong password?");
+            return;
+        }
+
+        // Step 4: Batch upload re-encrypted notes to Firestore
+        FirebaseFirestore db = FirebaseFirestore.getInstance();
+        WriteBatch batch = db.batch();
+        int batchCount = 0;
+
+        for (int i = 0; i < reEncryptedNotes.size(); i++) {
+            batch.set(
+                    db.collection("users").document(uid)
+                            .collection("notes").document(noteIds.get(i)),
+                    reEncryptedNotes.get(i),
+                    SetOptions.merge()
+            );
+            batchCount++;
+
+            // Firestore batch limit is 500
+            if (batchCount >= 450) {
+                try {
+                    com.google.android.gms.tasks.Tasks.await(batch.commit());
+                } catch (Exception e) {
+                    Log.e(TAG, "[MIGRATION_FAILED] Batch commit failed: " + e.getMessage());
+                    postCallback(context, callback, false, "Failed to upload re-encrypted notes");
+                    return;
+                }
+                batch = db.batch();
+                batchCount = 0;
+            }
+        }
+
+        // Commit remaining
+        if (batchCount > 0) {
+            try {
+                com.google.android.gms.tasks.Tasks.await(batch.commit());
+            } catch (Exception e) {
+                Log.e(TAG, "[MIGRATION_FAILED] Final batch commit failed: " + e.getMessage());
+                postCallback(context, callback, false, "Failed to upload re-encrypted notes");
                 return;
             }
-            NotesRepository repo = NotesRepository.getInstance(this);
-            repo.migrateToEncrypted(dek);
-            CryptoManager.zeroFill(dek);
-        } catch (Exception e) {
-            // Migration failed -- will retry on next unlock
+        }
+
+        Log.d(TAG, "[MIGRATION_PROGRESS] All re-encrypted notes uploaded to Firestore");
+
+        // Step 5: Create vault metadata and upload
+        KeyManager km = KeyManager.getInstance(context);
+        km.storeVaultLocally(newSaltHex, encryptedDEK, verifyTag, newIterations, 1);
+        km.uploadVaultToFirestore();
+
+        // Cache DEK in KeyManager so user can proceed
+        km.setCachedDEK(newDEK);
+
+        Log.d(TAG, "[MIGRATION_SUCCESS] Legacy cloud migration completed. "
+                + successCount + " notes migrated, " + failCount + " failed, " + skipCount + " skipped");
+
+        postCallback(context, callback, true, null);
+    }
+
+    /**
+     * Re-encrypt a single field: decrypt with legacy key, encrypt with new DEK.
+     * If the field is not encrypted (plain text), just encrypt it with new DEK.
+     */
+    private static String reEncryptField(Map<String, Object> data, String fieldName,
+                                          byte[] legacyKey, byte[] newDEK) {
+        Object val = data.get(fieldName);
+        if (val == null) return "";
+        String strVal = val.toString();
+        if (strVal.length() == 0) return "";
+
+        // Check if the field looks encrypted (ivHex:ciphertextHex)
+        if (CryptoManager.isEncrypted(strVal)) {
+            // Decrypt with legacy key
+            String plaintext = CryptoManager.decryptWithLegacyKey(strVal, legacyKey);
+            if (plaintext == null) {
+                // Decryption failed -- legacy key might not match
+                // Return original (do not corrupt data)
+                Log.w(TAG, "[MIGRATION_PROGRESS] Could not decrypt field '" + fieldName
+                        + "', keeping original encrypted data");
+                return strVal;
+            }
+            // Re-encrypt with new DEK
+            String reEncrypted = CryptoManager.encrypt(plaintext, newDEK);
+            return reEncrypted != null ? reEncrypted : strVal;
+        } else {
+            // Plain text -- just encrypt with new DEK
+            String encrypted = CryptoManager.encrypt(strVal, newDEK);
+            return encrypted != null ? encrypted : strVal;
         }
     }
 
-    private void showError(String message) {
-        textError.setText(message);
-        textError.setVisibility(View.VISIBLE);
+    /**
+     * Find an encrypted field in a note document (title or content).
+     * Returns the first field that looks encrypted, or null if none found.
+     */
+    private static String getEncryptedField(Map<String, Object> data) {
+        // Try title first, then content
+        String[] fields = {"title", "content", "checklistData", "routineData"};
+        for (String field : fields) {
+            Object val = data.get(field);
+            if (val instanceof String) {
+                String strVal = (String) val;
+                if (CryptoManager.isEncrypted(strVal)) {
+                    return strVal;
+                }
+            }
+        }
+        return null;
     }
 
-    private void launchMain() {
-        PrefsManager prefs = PrefsManager.getInstance(this);
-        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
+    /**
+     * Derive legacy key from available sources (local SessionManager prefs, note-embedded salt, etc).
+     * Returns the first key that succeeds, or null if no source available.
+     */
+    private static byte[] deriveLegacyKeyFromAvailableSources(Context context, String password, String oldSaltHex) {
+        byte[] key = null;
 
-        if (!authManager.isLoggedIn() && !prefs.isCloudSyncEnabled()
-                && authManager.getUid() == null) {
-            Intent intent = new Intent(this, FirebaseLoginActivity.class);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            startActivity(intent);
-            finish();
-            return;
+        // Source 1: Old salt from local SessionManager
+        if (oldSaltHex != null && oldSaltHex.length() > 0) {
+            Log.d(TAG, "[LEGACY_KEY] Deriving from local old salt");
+            byte[] oldSalt = CryptoUtils.hexToBytes(oldSaltHex);
+            key = CryptoUtils.deriveKey(password, oldSalt);
+            if (key != null) return key;
         }
 
-        Intent intent = new Intent(this, MainActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        startActivity(intent);
-        finish();
+        // Source 2: Try with CryptoManager's legacy derivation (same PBKDF2 params)
+        if (oldSaltHex != null && oldSaltHex.length() > 0) {
+            Log.d(TAG, "[LEGACY_KEY] Deriving from CryptoManager legacy path");
+            byte[] oldSalt = CryptoManager.hexToBytes(oldSaltHex);
+            key = CryptoManager.deriveLegacyKey(password, oldSalt);
+            if (key != null) return key;
+        }
+
+        Log.e(TAG, "[LEGACY_KEY] No salt source available for legacy key derivation");
+        return null;
     }
 
-    public void onBackPressed() {
-        moveTaskToBack(true);
+    /**
+     * Post callback to main thread safely.
+     */
+    private static void postCallback(Context context, LegacyMigrationCallback callback,
+                                      boolean success, String error) {
+        if (callback == null) return;
+        if (context instanceof android.app.Activity) {
+            ((android.app.Activity) context).runOnUiThread(() -> {
+                if (success) {
+                    callback.onSuccess();
+                } else {
+                    callback.onFailure(error != null ? error : "Unknown error");
+                }
+            });
+        } else {
+            // Fallback: call directly (might not be on main thread)
+            if (success) {
+                callback.onSuccess();
+            } else {
+                callback.onFailure(error != null ? error : "Unknown error");
+            }
+        }
     }
 }
