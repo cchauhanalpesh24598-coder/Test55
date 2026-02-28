@@ -408,4 +408,9 @@
     <string name="cloud_sync_not_logged_in">Not logged in</string>
     <string name="cloud_sync_uploading_all">Uploading all notes to cloud...</string>
     <string name="cloud_sync_upload_complete">All notes uploaded to cloud</string>
+
+    <!-- Show Password -->
+    <string name="show_password">Show Password</string>
+    <string name="decryption_failed_title">Decryption Failed</string>
+    <string name="decryption_failed_message">Could not decrypt this note. Wrong Master Password or corrupted data.</string>
 </resources>
