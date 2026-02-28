@@ -2,8 +2,12 @@ package com.mknotes.app;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.text.method.HideReturnsTransformationMethod;
+import android.text.method.PasswordTransformationMethod;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.TextView;
 
@@ -35,6 +39,7 @@ public class FirebaseLoginActivity extends AppCompatActivity {
     private Button btnAction;
     private TextView tvToggleMode;
     private TextView btnSkip;
+    private CheckBox cbShowPassword;
 
     private FirebaseAuthManager authManager;
 
@@ -57,8 +62,23 @@ public class FirebaseLoginActivity extends AppCompatActivity {
         btnAction = findViewById(R.id.btn_firebase_action);
         tvToggleMode = findViewById(R.id.tv_toggle_mode);
         btnSkip = findViewById(R.id.btn_skip);
+        cbShowPassword = findViewById(R.id.cb_firebase_show_password);
 
         btnAction.setOnClickListener(v -> handleAction());
+
+        // Show/Hide password toggle
+        if (cbShowPassword != null) {
+            cbShowPassword.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                    if (isChecked) {
+                        etPassword.setTransformationMethod(HideReturnsTransformationMethod.getInstance());
+                    } else {
+                        etPassword.setTransformationMethod(PasswordTransformationMethod.getInstance());
+                    }
+                    etPassword.setSelection(etPassword.getText().length());
+                }
+            });
+        }
 
         tvToggleMode.setOnClickListener(v -> toggleMode());
 
