@@ -207,7 +207,7 @@ public final class CryptoManager {
      *
      * @param encryptedData "ivHex:ciphertextHex"
      * @param dek           byte[32] data encryption key
-     * @return decrypted plaintext, or original data if not encrypted format, or null on failure
+     * @return decrypted plaintext, or original data if not encrypted format, or null on decrypt failure
      */
     public static String decrypt(String encryptedData, byte[] dek) {
         if (encryptedData == null || encryptedData.length() == 0) {
@@ -219,13 +219,21 @@ public final class CryptoManager {
         try {
             int colonIdx = encryptedData.indexOf(':');
             if (colonIdx <= 0) {
-                return encryptedData; // Not encrypted, return as-is
+                return encryptedData; // Not encrypted, return as-is (plain text)
             }
             String ivHex = encryptedData.substring(0, colonIdx);
             String cipherHex = encryptedData.substring(colonIdx + 1);
 
             if (ivHex.length() != GCM_IV_LENGTH * 2) {
-                return encryptedData; // Not encrypted format
+                return encryptedData; // Not encrypted format, return as-is
+            }
+
+            // Validate hex chars in IV part
+            for (int i = 0; i < ivHex.length(); i++) {
+                char c = ivHex.charAt(i);
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                    return encryptedData; // Not valid hex, treat as plain text
+                }
             }
 
             byte[] iv = hexToBytes(ivHex);
@@ -239,8 +247,39 @@ public final class CryptoManager {
 
             return new String(plainBytes, "UTF-8");
         } catch (Exception e) {
-            return encryptedData; // Decryption failed, return as-is
+            // Decryption failed -- key mismatch or corrupted data
+            // Return null so caller knows decryption FAILED (not plain text)
+            return null;
         }
+    }
+
+    /**
+     * Safe decrypt: tries DEK first, on failure returns "[Decryption Failed]" marker.
+     * UI should check for null and show "Wrong Master Password" message.
+     *
+     * @param encryptedData "ivHex:ciphertextHex"
+     * @param dek           byte[32] data encryption key
+     * @return decrypted text, or DECRYPT_FAILED_MARKER on failure
+     */
+    public static final String DECRYPT_FAILED_MARKER = "[DECRYPTION_FAILED]";
+
+    public static String decryptSafe(String encryptedData, byte[] dek) {
+        if (encryptedData == null || encryptedData.length() == 0) {
+            return "";
+        }
+        if (dek == null) {
+            // No key available
+            if (isEncrypted(encryptedData)) {
+                return DECRYPT_FAILED_MARKER;
+            }
+            return encryptedData;
+        }
+        String result = decrypt(encryptedData, dek);
+        if (result == null) {
+            // Decryption failed -- wrong key
+            return DECRYPT_FAILED_MARKER;
+        }
+        return result;
     }
 
     // ======================== HMAC VERIFICATION ========================
