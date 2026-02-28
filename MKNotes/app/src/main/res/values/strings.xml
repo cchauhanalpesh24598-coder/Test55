@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Samsung Notes</string>
+    <string name="title_all_notes">All notes</string>
+    <string name="title_search">Search</string>
+    <string name="title_settings">Settings</string>
+    <string name="title_trash">Trash</string>
+    <string name="title_categories">Categories</string>
+    <string name="title_editor">Edit Note</string>
+    <string name="title_new_note">New Note</string>
+
+    <!-- Main Screen -->
+    <string name="hint_search">Search notes...</string>
+    <string name="empty_notes">No notes yet.\nTap + to create one.</string>
+    <string name="empty_trash">Trash is empty.</string>
+    <string name="empty_search">No notes found.</string>
+    <string name="empty_categories">No categories yet.</string>
+
+    <!-- Editor -->
+    <string name="hint_title">Title</string>
+    <string name="hint_content">Start writing...</string>
+    <string name="note_saved">Note saved</string>
+    <string name="note_deleted">Note moved to trash</string>
+    <string name="note_restored">Note restored</string>
+    <string name="note_permanently_deleted">Note permanently deleted</string>
+    <string name="note_empty">Cannot save empty note</string>
+
+    <!-- Drawer Menu -->
+    <string name="drawer_all_notes">All Notes</string>
+    <string name="drawer_favorites">Favorites</string>
+    <string name="drawer_categories">Categories</string>
+    <string name="drawer_trash">Trash</string>
+    <string name="drawer_settings">Settings</string>
+
+    <!-- Dialogs -->
+    <string name="dialog_delete_title">Delete Note</string>
+    <string name="dialog_delete_message">Move this note to trash?</string>
+    <string name="dialog_permanent_delete_title">Delete Permanently</string>
+    <string name="dialog_permanent_delete_message">This note will be permanently deleted. This action cannot be undone.</string>
+    <string name="dialog_empty_trash_title">Empty Trash</string>
+    <string name="dialog_empty_trash_message">All notes in trash will be permanently deleted. This action cannot be undone.</string>
+    <string name="dialog_new_category_title">New Category</string>
+    <string name="dialog_edit_category_title">Edit Category</string>
+    <string name="dialog_delete_category_title">Delete Category</string>
+    <string name="dialog_delete_category_message">Delete this category? Notes in this category will not be deleted.</string>
+    <string name="dialog_color_picker_title">Choose Color</string>
+    <string name="dialog_category_name_hint">Category name</string>
+    <string name="dialog_reminder_title">Set Reminder</string>
+
+    <!-- Buttons -->
+    <string name="btn_save">Save</string>
+    <string name="btn_cancel">Cancel</string>
+    <string name="btn_delete">Delete</string>
+    <string name="btn_restore">Restore</string>
+    <string name="btn_ok">OK</string>
+    <string name="btn_share">Share</string>
+    <string name="btn_export">Export</string>
+    <string name="btn_empty_trash">Empty Trash</string>
+
+    <!-- Settings -->
+    <string name="settings_sort_order">Sort Order</string>
+    <string name="settings_sort_date_modified">Date Modified</string>
+    <string name="settings_sort_date_created">Date Created</string>
+    <string name="settings_sort_title">Title (A-Z)</string>
+    <string name="settings_view_mode">View Mode</string>
+    <string name="settings_view_list">List</string>
+    <string name="settings_view_grid">Grid</string>
+    <string name="settings_font_size">Font Size</string>
+    <string name="settings_font_small">Small</string>
+    <string name="settings_font_medium">Medium</string>
+    <string name="settings_font_large">Large</string>
+    <string name="settings_auto_save">Auto Save</string>
+    <string name="settings_confirm_delete">Confirm Before Delete</string>
+    <string name="settings_dark_mode">Dark Mode</string>
+    <string name="settings_about">About</string>
+    <string name="settings_version">Version 4.4.13</string>
+    <string name="settings_backup">Backup Notes</string>
+    <string name="settings_restore_backup">Restore Backup</string>
+    <string name="backup_restore">Backup &amp; Restore</string>
+    <string name="backup_notes_btn">Backup All Notes</string>
+    <string name="restore_notes_btn">Restore From Backup</string>
+    <string name="backup_success">Backup created successfully</string>
+    <string name="backup_failed">Backup failed</string>
+    <string name="restore_success">Notes restored successfully</string>
+    <string name="restore_failed">Restore failed</string>
+    <string name="restore_confirm_title">Restore Backup</string>
+    <string name="restore_confirm_message">This will add all backed up notes. Existing notes will not be deleted. Continue?</string>
+    <string name="no_backup_found">No backup file found</string>
+    <string name="backup_shared">Backup file ready to share</string>
+
+    <!-- Toolbar -->
+    <string name="action_search">Search</string>
+    <string name="action_sort">Sort</string>
+    <string name="action_view_mode">View Mode</string>
+    <string name="action_select_all">Select All</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_share">Share</string>
+    <string name="action_favorite">Favorite</string>
+    <string name="action_unfavorite">Remove Favorite</string>
+    <string name="action_pin">Pin</string>
+    <string name="action_unpin">Unpin</string>
+    <string name="action_set_color">Set Color</string>
+    <string name="action_move_to_category">Move to Category</string>
+    <string name="action_export">Export</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_redo">Redo</string>
+
+    <!-- Formatting -->
+    <string name="format_bold">Bold</string>
+    <string name="format_italic">Italic</string>
+    <string name="format_underline">Underline</string>
+    <string name="format_strikethrough">Strikethrough</string>
+    <string name="format_bullet_list">Bullet List</string>
+    <string name="format_checkbox">Checkbox</string>
+
+    <!-- Widget -->
+    <string name="widget_name">Notes Widget</string>
+    <string name="widget_description">Quick access to your notes</string>
+
+    <!-- Misc -->
+    <string name="content_description_fab">Create new note</string>
+    <string name="content_description_menu">Open menu</string>
+    <string name="content_description_back">Go back</string>
+    <string name="content_description_more">More options</string>
+    <string name="selected_count">%d selected</string>
+    <string name="notes_count">%d notes</string>
+    <string name="last_modified">Last modified: %s</string>
+    <string name="reminder_set">Reminder set for %s</string>
+    <string name="reminder_notification_title">Note Reminder</string>
+
+    <!-- Missing strings referenced by Java code and XML layouts -->
+    <string name="all_notes">All Notes</string>
+    <string name="favorites">Favorites</string>
+    <string name="search">Search</string>
+    <string name="menu">Menu</string>
+    <string name="view_mode">View Mode</string>
+    <string name="more">More</string>
+    <string name="add_note">Add Note</string>
+    <string name="share">Share</string>
+    <string name="remove_favorite">Remove Favorite</string>
+    <string name="add_favorite">Add to Favorites</string>
+    <string name="change_color">Change Color</string>
+    <string name="delete">Delete</string>
+    <string name="cancel">Cancel</string>
+    <string name="delete_note_title">Delete Note</string>
+    <string name="delete_note_message">Move this note to trash?</string>
+    <string name="note_moved_to_trash">Note moved to trash</string>
+    <string name="choose_color">Choose Color</string>
+    <string name="locked_note">Locked Note</string>
+    <string name="enter_password">Enter password</string>
+    <string name="unlock">Unlock</string>
+    <string name="wrong_password">Wrong password</string>
+    <string name="back">Back</string>
+    <string name="undo">Undo</string>
+    <string name="redo">Redo</string>
+    <string name="favorite">Favorite</string>
+    <string name="note_not_found">Note not found</string>
+    <string name="set_category">Set Category</string>
+    <string name="no_categories">No categories created yet</string>
+    <string name="no_category">No Category</string>
+    <string name="unlock_note">Unlock Note</string>
+    <string name="lock_note">Lock Note</string>
+    <string name="note_unlocked">Note unlocked</string>
+    <string name="set_password">Set a password</string>
+    <string name="lock">Lock</string>
+    <string name="note_locked">Note locked</string>
+    <string name="heading">Heading</string>
+    <string name="bold_text">Bold</string>
+    <string name="bullet_list">Bullet List</string>
+    <string name="checklist">Checklist</string>
+    <string name="insert_image">Insert Image</string>
+    <string name="drawing">Drawing</string>
+    <string name="voice">Voice</string>
+    <string name="text_format">Text Format</string>
+    <string name="color">Color</string>
+    <string name="search_hint">Search notes...</string>
+    <string name="clear">Clear</string>
+    <string name="no_results">No results found</string>
+    <string name="sort_by">Sort By</string>
+    <string name="sort_modified">Date Modified</string>
+    <string name="sort_created">Date Created</string>
+    <string name="sort_title">Title (A-Z)</string>
+    <string name="default_color">Default Note Color</string>
+    <string name="font_size">Font Size</string>
+    <string name="font_preview_text">This is a preview of your note text.</string>
+    <string name="auto_save">Auto Save</string>
+    <string name="confirm_delete">Confirm Before Delete</string>
+    <string name="about_app">About</string>
+    <string name="about_text">Samsung Notes v1.0\nA simple and powerful notes application.</string>
+    <string name="restore">Restore</string>
+    <string name="delete_permanently">Delete Permanently</string>
+    <string name="untitled">Untitled</string>
+    <string name="delete_permanently_title">Delete Permanently</string>
+    <string name="delete_permanently_message">This note will be permanently deleted. This cannot be undone.</string>
+    <string name="empty_trash_title">Empty Trash</string>
+    <string name="empty_trash_message">All notes in trash will be permanently deleted.</string>
+    <string name="trash_emptied">Trash emptied</string>
+    <string name="trash_empty">Trash is empty</string>
+    <string name="trash_info">Notes in trash will be permanently deleted after 30 days.</string>
+    <string name="add_category">Add Category</string>
+    <string name="category_name_hint">Category name</string>
+    <string name="add">Add</string>
+    <string name="enter_name">Please enter a name</string>
+    <string name="delete_category_title">Delete Category</string>
+    <string name="delete_category_message">Delete category \"%s\"? Notes in this category will not be deleted.</string>
+    <string name="category_deleted">Category deleted</string>
+    <string name="reminder">Reminder</string>
+
+    <!-- Rich Text Editor Panel -->
+    <string name="align_left">Align Left</string>
+    <string name="align_center">Align Center</string>
+    <string name="align_right">Align Right</string>
+    <string name="insert_link">Insert Link</string>
+    <string name="font_size_toggle">Font Size</string>
+    <string name="text_color">Text Color</string>
+    <string name="text_highlight">Highlight</string>
+    <string name="numbered_list">Numbered List</string>
+    <string name="code_format">Code</string>
+    <string name="close_panel">Close Panel</string>
+    <string name="open_format_panel">Open Format Panel</string>
+    <string name="edited_date">Edited %s</string>
+
+    <!-- Link Dialog -->
+    <string name="add_link">Add link</string>
+    <string name="link_text_hint">Text</string>
+    <string name="link_url_hint">Link</string>
+    <string name="remove_link">Remove</string>
+    <string name="save_link">Save</string>
+
+    <!-- Checklist -->
+    <string name="add_checklist_item">Add item</string>
+    <string name="delete_checklist_item">Delete item</string>
+    <string name="drag_handle">Drag to reorder</string>
+    <string name="convert_to_checklist">Convert to checklist</string>
+    <string name="convert_to_text">Convert to text</string>
+    <string name="checklist_mode">Checklist mode</string>
+    <string name="text_mode">Text mode</string>
+    <string name="uncheck_all">Uncheck all</string>
+    <string name="delete_checked">Delete checked items</string>
+
+    <!-- Selection Toolbar -->
+    <string name="selection_close">Close selection</string>
+    <string name="archive_note">Archive</string>
+    <string name="unarchive_note">Unarchive</string>
+    <string name="note_unarchived">Note unarchived</string>
+    <string name="empty_archive">No archived notes</string>
+    <string name="make_copy">Make a copy</string>
+    <string name="send_note">Send</string>
+    <string name="search_your_notes">Search your notes</string>
+
+    <!-- Media Attachment -->
+    <string name="add_image">Add Image</string>
+    <string name="attach_file">Attach File</string>
+    <string name="record_audio">Record Audio</string>
+    <string name="link_note">Link Note</string>
+    <string name="no_app_to_open">No app available to open this file</string>
+    <string name="image_added">Image added</string>
+    <string name="file_attached">File attached</string>
+    <string name="audio_recorded">Audio recorded</string>
+    <string name="note_linked">Note linked</string>
+    <string name="delete_image_title">Delete Image</string>
+    <string name="delete_image_message">Remove this image from the note?</string>
+    <string name="delete_file_title">Delete File</string>
+    <string name="delete_file_message">Remove this file attachment?</string>
+    <string name="delete_audio_title">Delete Audio</string>
+    <string name="delete_audio_message">Remove this audio recording?</string>
+    <string name="unlink_note_title">Unlink Note</string>
+    <string name="unlink_note_message">Remove this linked note?</string>
+    <string name="recording">Recording...</string>
+    <string name="recording_paused">Recording paused</string>
+    <string name="recording_stopped">Recording stopped</string>
+    <string name="start_recording">Start Recording</string>
+    <string name="pause_recording">Pause Recording</string>
+    <string name="resume_recording">Resume Recording</string>
+    <string name="stop_recording">Stop Recording</string>
+    <string name="save_recording">Save</string>
+    <string name="discard_recording">Discard</string>
+    <string name="recording_duration">%s</string>
+    <string name="permission_audio_required">Audio recording permission is required</string>
+    <string name="permission_storage_required">Storage permission is required</string>
+    <string name="select_note_to_link">Select a note to link</string>
+    <string name="no_notes_to_link">No other notes available to link</string>
+    <string name="linked_note_deleted">Linked note no longer exists</string>
+    <string name="images_section">Images</string>
+    <string name="files_section">Files</string>
+    <string name="audios_section">Audio Recordings</string>
+    <string name="linked_notes_section">Linked Notes</string>
+    <string name="add_attachment">Add</string>
+
+    <!-- Image Viewer -->
+    <string name="rotate_image">Rotate</string>
+    <string name="download_image">Download</string>
+
+    <!-- Routine -->
+    <string name="routine">Routine</string>
+    <string name="routine_today">Routine \u2013 Today</string>
+    <string name="wake_label">Wake:</string>
+    <string name="sleep_label">Sleep:</string>
+    <string name="wake_hint">0645</string>
+    <string name="sleep_hint">1000</string>
+    <string name="routine_time_confirm_title">Time Confirmation</string>
+    <string name="routine_time_confirm_msg">This time appears earlier than the previous entry. Switch to AM?</string>
+    <string name="routine_select_start">Select Start Time</string>
+    <string name="routine_content_hint">Tap + to add your first routine entry\u2026</string>
+
+    <!-- Meditation -->
+    <string name="meditation">Meditation</string>
+    <string name="meditation_add_title">Mantra Library</string>
+    <string name="meditation_name_hint">Mantra Name</string>
+    <string name="meditation_enter_name">Please enter mantra name</string>
+    <string name="meditation_added">Mantra added</string>
+    <string name="meditation_widget_name">Meditation Widget</string>
+    <string name="meditation_widget_desc">Quick play/pause for last mantra</string>
+
+    <!-- Share Options -->
+    <string name="share_options">Share</string>
+    <string name="share_text_only">Only Text</string>
+    <string name="share_text_media">Text + Media</string>
+    <string name="no_media_attached">No media attached</string>
+
+    <!-- Calendar Analysis -->
+    <string name="analysis_title">Calendar Analysis</string>
+    <string name="analysis_tab_notes">Notes</string>
+    <string name="analysis_tab_routine">Routine</string>
+    <string name="analysis_tab_meditation">Meditation</string>
+    <string name="analysis_tab_mood">Mood</string>
+    <string name="analysis_tab_all">All</string>
+    <string name="analysis_mode_date">Date</string>
+    <string name="analysis_mode_month">Month</string>
+    <string name="analysis_mode_year">Year</string>
+    <string name="analysis_multi_select">Multi-Select</string>
+    <string name="analysis_done">Done</string>
+    <string name="analysis_total">Total</string>
+    <string name="analysis_mala">Mala</string>
+    <string name="analysis_count">Count</string>
+    <string name="analysis_no_data">No data for selected period</string>
+    <string name="analysis_no_notes">No notes found</string>
+    <string name="analysis_no_routine">No routine data found</string>
+    <string name="analysis_no_meditation">No meditation data found</string>
+    <string name="analysis_edit">Edit</string>
+    <string name="analysis_summary">Summary</string>
+    <string name="analysis_mantra_name">Mantra</string>
+    <string name="analysis_notes_count">%d Notes</string>
+    <string name="analysis_meditation_sessions">%d Sessions</string>
+    <string name="analysis_select_date">Tap to select, then press Done</string>
+    <string name="analysis_selected_dates">%d dates selected</string>
+    <string name="analysis_select_at_least_one">Please select at least one %1$s</string>
+    <string name="analysis_max_dates">Maximum %1$d dates allowed</string>
+    <string name="analysis_max_months">Maximum %1$d months allowed</string>
+    <string name="analysis_max_years">Maximum %1$d years allowed</string>
+    <string name="analysis_clear_all">Clear All</string>
+    <string name="analysis_selected_count">%1$d / %2$d selected</string>
+
+    <!-- Master Password -->
+    <string name="master_password_title_create">Create Master Password</string>
+    <string name="master_password_title_unlock">Enter Master Password</string>
+    <string name="master_password_subtitle_create">Set a strong password to protect your notes.\nYou will need this password every time you open the app.</string>
+    <string name="master_password_subtitle_unlock">Enter your master password to unlock the app.</string>
+    <string name="master_password_hint">Enter password</string>
+    <string name="master_password_confirm_hint">Confirm password</string>
+    <string name="master_password_btn_create">Set Password</string>
+    <string name="master_password_btn_unlock">Unlock</string>
+    <string name="master_password_error_short">Password must be at least 8 characters</string>
+    <string name="master_password_error_mismatch">Passwords do not match</string>
+    <string name="master_password_error_wrong">Wrong password. Please try again.</string>
+    <string name="master_password_error_empty">Please enter your password</string>
+    <string name="master_password_error_generic">Something went wrong. Please try again.</string>
+    <string name="master_password_set_success">Master password set successfully</string>
+    <string name="master_password_strength_hint">Minimum 8 characters required</string>
+    <string name="master_password_change">Change Master Password</string>
+    <string name="master_password_change_subtitle">Change your app lock password</string>
+    <string name="master_password_old_hint">Current password</string>
+    <string name="master_password_new_hint">New password</string>
+    <string name="master_password_new_confirm_hint">Confirm new password</string>
+    <string name="master_password_changed_success">Master password changed successfully</string>
+    <string name="master_password_old_wrong">Current password is incorrect</string>
+    <string name="security_section">Security</string>
+
+    <!-- Firebase Cloud Sync -->
+    <string name="firebase_login_title">Cloud Sync</string>
+    <string name="firebase_login_subtitle">Sign in to sync your notes across devices.</string>
+    <string name="firebase_register_subtitle">Create a new account for cloud sync.</string>
+    <string name="firebase_email_hint">Email address</string>
+    <string name="firebase_password_hint">Password (min 6 characters)</string>
+    <string name="firebase_btn_login">Sign In</string>
+    <string name="firebase_btn_register">Create Account</string>
+    <string name="firebase_no_account">Don\'t have an account? Register</string>
+    <string name="firebase_has_account">Already have an account? Sign In</string>
+    <string name="firebase_skip">Skip</string>
+    <string name="firebase_error_email_empty">Please enter your email</string>
+    <string name="firebase_error_password_short">Password must be at least 6 characters</string>
+
+    <!-- Cloud Sync Settings -->
+    <string name="cloud_sync_section">Cloud Sync</string>
+    <string name="cloud_sync_enable">Enable Cloud Sync</string>
+    <string name="cloud_sync_enable_subtitle">Sync notes across devices via Firebase</string>
+    <string name="cloud_sync_account">Cloud Account</string>
+    <string name="cloud_sync_logout">Logout</string>
+    <string name="cloud_sync_login">Login to Cloud</string>
+    <string name="cloud_sync_manual">Sync Now</string>
+    <string name="cloud_sync_manual_subtitle">Manually sync all notes with cloud</string>
+    <string name="cloud_sync_syncing">Syncing...</string>
+    <string name="cloud_sync_success">Sync completed</string>
+    <string name="cloud_sync_failed">Sync failed. Will retry later.</string>
+    <string name="cloud_sync_logout_confirm_title">Logout from Cloud</string>
+    <string name="cloud_sync_logout_confirm_message">Cloud sync will be disabled. Your local notes will remain. Continue?</string>
+    <string name="cloud_sync_logged_out">Logged out from cloud</string>
+    <string name="cloud_sync_not_logged_in">Not logged in</string>
+    <string name="cloud_sync_uploading_all">Uploading all notes to cloud...</string>
+    <string name="cloud_sync_upload_complete">All notes uploaded to cloud</string>
+</resources>

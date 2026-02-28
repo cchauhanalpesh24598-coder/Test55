@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Meditation Widget layout.
+    Uses FrameLayout root so we can overlay a transparent tap-wake button
+    on top of the content. The content itself is a LinearLayout with
+    header + scrollable ListView + empty state.
+    Background swaps between faded/active drawables for opacity effect.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_meditation_widget_faded">
+
+    <!-- Content layer -->
+    <LinearLayout
+        android:id="@+id/widget_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="6dp">
+
+        <!-- Header -->
+        <TextView
+            android:id="@+id/widget_header"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Meditation"
+            android:textColor="#66BB6A"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:paddingBottom="2dp" />
+
+        <!-- Scrollable mantra list via RemoteViewsService -->
+        <ListView
+            android:id="@+id/widget_mantra_list"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:divider="@null"
+            android:dividerHeight="0dp"
+            android:scrollbars="none"
+            android:fadingEdge="none"
+            android:listSelector="@android:color/transparent"
+            android:visibility="visible" />
+
+        <!-- Empty state (shown when no mantras today) -->
+        <TextView
+            android:id="@+id/widget_empty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="No Active Mantra Today"
+            android:textColor="#888888"
+            android:textSize="10sp"
+            android:gravity="center"
+            android:visibility="gone"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp" />
+
+    </LinearLayout>
+
+    <!-- Tap-wake overlay: invisible clickable layer to catch taps
+         when widget is in faded state. Made GONE when widget is active. -->
+    <View
+        android:id="@+id/widget_tap_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent"
+        android:clickable="true"
+        android:visibility="visible" />
+
+</FrameLayout>

@@ -1,0 +1,37 @@
+#!/bin/sh
+#
+# Gradle start up script for UN*X
+#
+
+APP_NAME="Gradle"
+APP_BASE_NAME=`basename "$0"`
+APP_HOME="`pwd -P`"
+
+CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+
+# OS specific support
+cygwin=false
+msys=false
+darwin=false
+nonstop=false
+case "`uname`" in
+  CYGWIN* )
+    cygwin=true
+    ;;
+  Darwin* )
+    darwin=true
+    ;;
+  MSYS* | MINGW* )
+    msys=true
+    ;;
+  NONSTOP* )
+    nonstop=true
+    ;;
+esac
+
+JAVA_EXE=java
+if test -n "$JAVA_HOME" ; then
+    JAVA_EXE="$JAVA_HOME/bin/java"
+fi
+
+exec "$JAVA_EXE" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"

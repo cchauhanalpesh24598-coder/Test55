@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:minHeight="48dp"
+    android:paddingLeft="28dp"
+    android:paddingRight="8dp"
+    android:background="@color/editor_bg">
+
+    <ImageView
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:src="@drawable/ic_add"
+        android:scaleType="center"
+        android:layout_marginLeft="8dp"
+        android:layout_marginRight="12dp"
+        android:contentDescription="@string/add_checklist_item" />
+
+    <TextView
+        android:id="@+id/tv_add_item"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/add_checklist_item"
+        android:textColor="@color/text_hint"
+        android:textSize="15sp" />
+
+</LinearLayout>

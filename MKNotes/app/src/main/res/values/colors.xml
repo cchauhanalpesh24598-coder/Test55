@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary Colors - Samsung Style -->
+    <color name="colorPrimary">#FF1a73e8</color>
+    <color name="colorPrimaryDark">#FF1558b0</color>
+    <color name="colorAccent">#FFFFA000</color>
+
+    <!-- Background Colors -->
+    <color name="colorBackground">#FFF5F5F5</color>
+    <color name="colorSurface">#FFFFFFFF</color>
+    <color name="colorCardBackground">#FFFFFFFF</color>
+
+    <!-- Text Colors -->
+    <color name="colorTextPrimary">#FF212121</color>
+    <color name="colorTextSecondary">#FF757575</color>
+    <color name="colorTextHint">#FFBDBDBD</color>
+    <color name="colorTextOnPrimary">#FFFFFFFF</color>
+
+    <!-- Toolbar -->
+    <color name="colorToolbar">#FFFFFFFF</color>
+    <color name="colorToolbarText">#FF212121</color>
+    <color name="colorToolbarIcon">#FF616161</color>
+
+    <!-- Drawer -->
+    <color name="colorDrawerBackground">#FFFFFFFF</color>
+    <color name="colorDrawerItemSelected">#FFE8F0FE</color>
+    <color name="colorDrawerItemText">#FF424242</color>
+    <color name="colorDrawerDivider">#FFE0E0E0</color>
+
+    <!-- FAB -->
+    <color name="colorFab">#FF1a73e8</color>
+    <color name="colorFabIcon">#FFFFFFFF</color>
+    <color name="colorFabRipple">#33FFFFFF</color>
+
+    <!-- Note Card Colors (Legacy) -->
+    <color name="note_color_white">#FFFFFFFF</color>
+    <color name="note_color_red">#FFFFCDD2</color>
+    <color name="note_color_orange">#FFFFE0B2</color>
+    <color name="note_color_yellow">#FFFFF9C4</color>
+    <color name="note_color_green">#FFC8E6C9</color>
+    <color name="note_color_blue">#FFBBDEFB</color>
+    <color name="note_color_purple">#FFE1BEE7</color>
+    <color name="note_color_pink">#FFF8BBD0</color>
+    <color name="note_color_gray">#FFCFD8DC</color>
+
+    <!-- NotallyX Note Color Palette -->
+    <color name="note_coral">#FFFAAFA9</color>
+    <color name="note_orange">#FFFFCC80</color>
+    <color name="note_sand">#FFFFF8B9</color>
+    <color name="note_storm">#FFAFCCDC</color>
+    <color name="note_fog">#FFD3E4EC</color>
+    <color name="note_sage">#FFB4DED4</color>
+    <color name="note_mint">#FFE2F6D3</color>
+    <color name="note_dusk">#FFD3BFDB</color>
+    <color name="note_flower">#FFF8BBD0</color>
+    <color name="note_blossom">#FFF5E2DC</color>
+    <color name="note_clay">#FFE9E3D3</color>
+
+    <!-- Divider / Separator -->
+    <color name="colorDivider">#FFE0E0E0</color>
+
+    <!-- Aliases used in layouts -->
+    <color name="background_primary">#FFF5F5F5</color>
+    <color name="toolbar_bg">#FFFFFFFF</color>
+    <color name="text_primary">#FF212121</color>
+    <color name="text_secondary">#FF757575</color>
+    <color name="text_hint">#FFBDBDBD</color>
+    <color name="accent">#FF1a73e8</color>
+    <color name="editor_bg">#FFFFFFFF</color>
+    <color name="note_color_default">#FFFFFFFF</color>
+    <color name="info_bg">#FFFFF3E0</color>
+    <color name="divider">#FFE0E0E0</color>
+
+    <!-- Status Colors -->
+    <color name="colorFavorite">#FFFFA000</color>
+    <color name="colorPinned">#FF1a73e8</color>
+    <color name="colorTrash">#FFE53935</color>
+
+    <!-- Editor Toolbar -->
+    <color name="colorEditorToolbar">#FFF5F5F5</color>
+    <color name="colorEditorToolbarIcon">#FF616161</color>
+    <color name="colorEditorToolbarIconActive">#FF1a73e8</color>
+
+    <!-- Ripple -->
+    <color name="colorRipple">#20000000</color>
+
+    <!-- Search -->
+    <color name="colorSearchBackground">#FFEEEEEE</color>
+    <color name="colorSearchText">#FF212121</color>
+    <color name="colorSearchHint">#FF9E9E9E</color>
+
+    <!-- Dark Mode Colors -->
+    <color name="colorDarkBackground">#FF121212</color>
+    <color name="colorDarkSurface">#FF1E1E1E</color>
+    <color name="colorDarkCard">#FF2D2D2D</color>
+    <color name="colorDarkTextPrimary">#FFFFFFFF</color>
+    <color name="colorDarkTextSecondary">#FFB0B0B0</color>
+
+    <!-- Keep Notes Style - Bottom Bar / Panel -->
+    <color name="keepBottomBar">#14131B</color>
+    <color name="keepPanelBg">#1E1F2B</color>
+    <color name="keepPanelBtnSelected">#393B3D</color>
+    <color name="keepPanelIconDefault">#CBCCCD</color>
+    <color name="keepPanelDivider">#3C3C3C</color>
+    <color name="keepDateText">#8E8E93</color>
+
+    <!-- Keep Notes Style - Dialog -->
+    <color name="keepDialogBg">#1a1d21</color>
+    <color name="keepDialogInputBg">#2C2F33</color>
+    <color name="keepDialogBtnSave">#007a5a</color>
+    <color name="keepDialogBtnSavePressed">#005c44</color>
+    <color name="keepDialogBorder">#5F6368</color>
+    <color name="keepDialogTextWhite">#FFFFFF</color>
+    <color name="keepDialogTextHint">#9AA0A6</color>
+
+    <!-- Keep Notes Style - Selection -->
+    <color name="keepSelectionBg">#14131B</color>
+
+    <!-- Rich Text Colors -->
+    <color name="richTextRed">#FFFF0000</color>
+    <color name="richTextHighlightYellow">#FFFFFF00</color>
+
+    <!-- Checklist Colors -->
+    <color name="checklist_checked_text">#FF9E9E9E</color>
+    <color name="checklist_highlight">#FFFFF176</color>
+    <color name="checklist_highlight_text">#FF212121</color>
+    <color name="checklist_divider">#FFEEEEEE</color>
+    <color name="checklist_child_indent">#FFE0E0E0</color>
+
+    <!-- Routine Colors -->
+    <color name="routine_header_bg">#1A1a73e8</color>
+    <color name="routine_header_stroke">#331a73e8</color>
+    <color name="routine_container_bg">#0D1a73e8</color>
+    <color name="routine_container_stroke">#221a73e8</color>
+    <color name="routine_label_text">#FF1a73e8</color>
+    <color name="routine_time_bold">#FFFFFFFF</color>
+
+    <!-- Meditation Colors -->
+    <color name="meditation_card_bg">#FF1A2A1A</color>
+    <color name="meditation_card_border">#FF2E7D32</color>
+    <color name="meditation_mantra_name">#FF81C784</color>
+    <color name="meditation_btn_bg">#FF1B5E20</color>
+    <color name="meditation_btn_text">#FFA5D6A7</color>
+    <color name="meditation_speed_active">#FF4CAF50</color>
+
+    <!-- Category Default Colors -->
+    <color name="category_blue">#FF1a73e8</color>
+    <color name="category_red">#FFE53935</color>
+    <color name="category_green">#FF43A047</color>
+    <color name="category_orange">#FFFB8C00</color>
+    <color name="category_purple">#FF8E24AA</color>
+    <color name="category_teal">#FF00897B</color>
+
+    <!-- Calendar Analysis Colors -->
+    <color name="analysis_bg">#FF0D0D12</color>
+    <color name="analysis_surface">#FF161620</color>
+    <color name="analysis_card">#FF1C1C28</color>
+    <color name="analysis_card_border">#FF2A2A3A</color>
+    <color name="analysis_accent">#FF4A9EFF</color>
+    <color name="analysis_accent_dim">#334A9EFF</color>
+    <color name="analysis_text_primary">#FFEAEAF0</color>
+    <color name="analysis_text_secondary">#FF8888A0</color>
+    <color name="analysis_text_muted">#FF555570</color>
+    <color name="analysis_tab_bg">#FF1A1A26</color>
+    <color name="analysis_tab_selected">#FF4A9EFF</color>
+    <color name="analysis_tab_text">#FF8888A0</color>
+    <color name="analysis_tab_text_selected">#FFFFFFFF</color>
+    <color name="analysis_calendar_today">#FF4A9EFF</color>
+    <color name="analysis_calendar_selected">#FF4A9EFF</color>
+    <color name="analysis_calendar_header">#FFEAEAF0</color>
+    <color name="analysis_calendar_day">#FFCCCCDD</color>
+    <color name="analysis_calendar_day_other">#FF444460</color>
+    <color name="analysis_grid_line">#FF222233</color>
+    <color name="analysis_graph_bg">#FF13131E</color>
+    <color name="analysis_mode_bg">#FF1A1A26</color>
+    <color name="analysis_mode_selected">#FF4A9EFF</color>
+    <color name="analysis_divider">#FF222233</color>
+    <color name="analysis_green">#FF4ADE80</color>
+    <color name="analysis_orange">#FFFFA04A</color>
+    <color name="analysis_pink">#FFFF6B9D</color>
+    <color name="analysis_cyan">#FF22D3EE</color>
+    <color name="analysis_yellow">#FFFACC15</color>
+    <color name="analysis_purple">#FFA78BFA</color>
+    <color name="analysis_red">#FFEF4444</color>
+    <color name="analysis_teal">#FF2DD4BF</color>
+</resources>

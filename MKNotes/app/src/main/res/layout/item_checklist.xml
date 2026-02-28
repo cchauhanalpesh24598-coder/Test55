@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:minHeight="48dp"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp"
+    android:paddingRight="8dp"
+    android:background="@color/editor_bg">
+
+    <ImageView
+        android:id="@+id/iv_drag_handle"
+        android:layout_width="28dp"
+        android:layout_height="40dp"
+        android:src="@drawable/ic_drag_handle"
+        android:scaleType="center"
+        android:contentDescription="@string/drag_handle"
+        android:paddingLeft="4dp" />
+
+    <CheckBox
+        android:id="@+id/cb_item"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginLeft="0dp"
+        android:layout_marginRight="4dp"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:buttonTint="@color/accent" />
+
+    <EditText
+        android:id="@+id/et_item_body"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:background="@null"
+        android:hint=""
+        android:inputType="textCapSentences|textMultiLine"
+        android:textColor="@color/text_primary"
+        android:textSize="15sp"
+        android:lineSpacingExtra="2dp"
+        android:minHeight="36dp"
+        android:gravity="center_vertical"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp" />
+
+    <ImageView
+        android:id="@+id/iv_delete_item"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:src="@drawable/ic_close"
+        android:scaleType="center"
+        android:contentDescription="@string/delete_checklist_item"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:visibility="gone" />
+
+</LinearLayout>

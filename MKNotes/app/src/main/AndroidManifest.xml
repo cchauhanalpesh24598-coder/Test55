@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.mknotes.app">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
+    <application
+        android:name="com.mknotes.app.NotesApplication"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme"
+        android:supportsRtl="true"
+        tools:replace="android:allowBackup">
+
+        <!-- Master Password Gate (LAUNCHER) -->
+        <activity
+            android:name="com.mknotes.app.MasterPasswordActivity"
+            android:label="@string/app_name"
+            android:screenOrientation="portrait"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Main Activity - Notes List -->
+        <activity
+            android:name="com.mknotes.app.MainActivity"
+            android:label="@string/app_name"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- Note Editor Activity -->
+        <activity
+            android:name="com.mknotes.app.NoteEditorActivity"
+            android:label="@string/title_editor"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Settings Activity -->
+        <activity
+            android:name="com.mknotes.app.SettingsActivity"
+            android:label="@string/title_settings"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- Search Activity -->
+        <activity
+            android:name="com.mknotes.app.SearchActivity"
+            android:label="@string/title_search"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:windowSoftInputMode="stateVisible|adjustResize" />
+
+        <!-- Trash Activity -->
+        <activity
+            android:name="com.mknotes.app.TrashActivity"
+            android:label="@string/title_trash"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- Archive Activity -->
+        <activity
+            android:name="com.mknotes.app.ArchiveActivity"
+            android:label="@string/archive_note"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- Firebase Login Activity -->
+        <activity
+            android:name="com.mknotes.app.FirebaseLoginActivity"
+            android:label="@string/firebase_login_title"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- Category Manager Activity -->
+        <activity
+            android:name="com.mknotes.app.CategoryActivity"
+            android:label="@string/title_categories"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- View Image Activity -->
+        <activity
+            android:name="com.mknotes.app.ViewImageActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
+        <!-- Calendar Analysis Activity -->
+        <activity
+            android:name="com.mknotes.app.analysis.CalendarAnalysisActivity"
+            android:label="@string/analysis_title"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- Custom FileProvider for sharing files with other apps -->
+        <provider
+            android:name="com.mknotes.app.util.MKFileProvider"
+            android:authorities="com.mknotes.app.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Audio Recording Service -->
+        <service
+            android:name="com.mknotes.app.service.AudioRecordingService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+
+        <!-- Boot Receiver for reminders -->
+        <receiver
+            android:name="com.mknotes.app.receiver.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Reminder Receiver -->
+        <receiver
+            android:name="com.mknotes.app.receiver.ReminderReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- Media Button Receiver for earphone/bluetooth -->
+        <receiver
+            android:name="com.mknotes.app.receiver.MediaButtonReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Meditation Foreground Service -->
+        <service
+            android:name="com.mknotes.app.service.MeditationService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+
+        <!-- Meditation Widget ListView Service -->
+        <service
+            android:name="com.mknotes.app.widget.MeditationWidgetService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
+        <!-- Meditation Widget -->
+        <receiver
+            android:name="com.mknotes.app.widget.MeditationWidgetProvider"
+            android:exported="true"
+            android:label="Meditation">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.DATE_CHANGED" />
+                <action android:name="com.mknotes.app.MEDITATION_COUNT_UPDATED" />
+                <action android:name="com.mknotes.app.MEDITATION_STATE_CHANGED" />
+                <action android:name="com.mknotes.app.WIDGET_MED_TOGGLE" />
+                <action android:name="com.mknotes.app.WIDGET_MED_SPEED" />
+                <action android:name="com.mknotes.app.WIDGET_MED_WAKE" />
+                <action android:name="com.mknotes.app.WIDGET_MED_FADE" />
+                <action android:name="com.mknotes.app.WIDGET_MED_LIST_CLICK" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/meditation_widget_info" />
+        </receiver>
+
+    </application>
+
+</manifest>

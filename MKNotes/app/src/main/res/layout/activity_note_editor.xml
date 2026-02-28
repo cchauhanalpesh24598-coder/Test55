@@ -1,0 +1,506 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root_editor_layout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/editor_bg">
+
+    <!-- TopBar: Back + Title (centered, fills space) + Favorite only -->
+    <RelativeLayout
+        android:id="@+id/editor_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:background="@color/toolbar_bg"
+        android:elevation="4dp"
+        android:paddingLeft="4dp"
+        android:paddingRight="4dp"
+        android:gravity="center_vertical">
+
+        <ImageButton
+            android:id="@+id/btn_back"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_centerVertical="true"
+            android:layout_alignParentLeft="true"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_back"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/back" />
+
+        <EditText
+            android:id="@+id/et_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@id/btn_back"
+            android:layout_toLeftOf="@+id/btn_favorite"
+            android:background="@null"
+            android:hint="@string/hint_title"
+            android:inputType="textCapSentences"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:paddingLeft="8dp"
+            android:paddingRight="8dp"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_hint"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:maxLines="1" />
+
+        <ImageButton
+            android:id="@+id/btn_favorite"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_centerVertical="true"
+            android:layout_alignParentRight="true"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_star_outline"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/favorite" />
+
+    </RelativeLayout>
+
+    <!-- Date + Mood Strip Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingLeft="16dp"
+        android:paddingRight="12dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="2dp">
+
+        <TextView
+            android:id="@+id/tv_date"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/text_hint"
+            android:textSize="11sp" />
+
+        <View
+            android:layout_width="8dp"
+            android:layout_height="1dp" />
+
+        <!-- Mood Strip: scrollable horizontal emoji container -->
+        <HorizontalScrollView
+            android:id="@+id/mood_strip_scroll"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:scrollbars="none"
+            android:clipChildren="false"
+            android:clipToPadding="false">
+
+            <LinearLayout
+                android:id="@+id/mood_strip_container"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="36dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground"
+                android:paddingLeft="4dp"
+                android:paddingRight="4dp"
+                android:clipChildren="false"
+                android:clipToPadding="false">
+
+                <!-- "+ Mood" placeholder shown when empty -->
+                <TextView
+                    android:id="@+id/tv_mood_placeholder"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="+ Mood"
+                    android:textColor="@color/text_hint"
+                    android:textSize="11sp"
+                    android:visibility="visible" />
+
+            </LinearLayout>
+
+        </HorizontalScrollView>
+
+    </LinearLayout>
+
+    <!-- Main scrollable content: routine header + content + attachments all in one scroll -->
+    <ScrollView
+        android:id="@+id/scroll_text_content"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:scrollbars="vertical"
+        android:visibility="visible">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- Routine Header Section - initially GONE, compact design -->
+            <LinearLayout
+                android:id="@+id/routine_header_section"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone"
+                android:paddingLeft="14dp"
+                android:paddingRight="14dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="4dp">
+
+                <!-- Compact header: Routine label left, Wake/Sleep stacked right -->
+                <LinearLayout
+                    android:id="@+id/routine_header"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_routine_header"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingLeft="14dp"
+                    android:paddingRight="14dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp">
+
+                    <!-- Left: Routine label -->
+                    <TextView
+                        android:id="@+id/tv_routine_label"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/routine_today"
+                        android:textColor="@color/routine_label_text"
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:letterSpacing="0.02" />
+
+                    <!-- Right: Wake and Sleep stacked vertically -->
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:gravity="end">
+
+                        <!-- Wake row -->
+                        <LinearLayout
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/wake_label"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="12sp" />
+
+                            <EditText
+                                android:id="@+id/et_routine_wake"
+                                android:layout_width="78dp"
+                                android:layout_height="wrap_content"
+                                android:background="@null"
+                                android:hint="@string/wake_hint"
+                                android:inputType="number"
+                                android:maxLength="8"
+                                android:paddingLeft="4dp"
+                                android:textColor="@color/routine_label_text"
+                                android:textColorHint="@color/text_hint"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:singleLine="true" />
+                        </LinearLayout>
+
+                        <!-- Sleep row -->
+                        <LinearLayout
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginTop="2dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/sleep_label"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="12sp" />
+
+                            <EditText
+                                android:id="@+id/et_routine_sleep"
+                                android:layout_width="78dp"
+                                android:layout_height="wrap_content"
+                                android:background="@null"
+                                android:hint="@string/sleep_hint"
+                                android:inputType="number"
+                                android:maxLength="8"
+                                android:paddingLeft="4dp"
+                                android:textColor="@color/routine_label_text"
+                                android:textColorHint="@color/text_hint"
+                                android:textSize="13sp"
+                                android:textStyle="bold"
+                                android:singleLine="true" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Routine entries container -->
+                <LinearLayout
+                    android:id="@+id/routine_entries_container"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_routine_container"
+                    android:layout_marginTop="4dp"
+                    android:orientation="vertical"
+                    android:paddingLeft="12dp"
+                    android:paddingRight="12dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp">
+
+                    <EditText
+                        android:id="@+id/et_routine_content"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="@null"
+                        android:gravity="top"
+                        android:hint="@string/routine_content_hint"
+                        android:inputType="textCapSentences|textMultiLine"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_hint"
+                        android:textSize="13sp"
+                        android:lineSpacingExtra="4dp"
+                        android:minHeight="48dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Meditation cards container - initially GONE -->
+            <LinearLayout
+                android:id="@+id/meditation_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone"
+                android:paddingLeft="14dp"
+                android:paddingRight="14dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="4dp" />
+
+            <!-- Content area -->
+            <EditText
+                android:id="@+id/et_content"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@null"
+                android:gravity="top"
+                android:hint="@string/hint_content"
+                android:inputType="textCapSentences|textMultiLine"
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="16dp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_hint"
+                android:textSize="16sp"
+                android:lineSpacingExtra="4dp"
+                android:minHeight="200dp" />
+
+            <!-- Image previews container -->
+            <LinearLayout
+                android:id="@+id/images_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:visibility="gone">
+
+                <HorizontalScrollView
+                    android:id="@+id/images_scroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:scrollbars="none"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp">
+
+                    <LinearLayout
+                        android:id="@+id/images_list"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal" />
+
+                </HorizontalScrollView>
+            </LinearLayout>
+
+            <!-- Audio recordings container -->
+            <LinearLayout
+                android:id="@+id/audios_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:visibility="gone" />
+
+            <!-- File attachments container -->
+            <LinearLayout
+                android:id="@+id/files_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:visibility="gone" />
+
+            <!-- Linked notes container -->
+            <LinearLayout
+                android:id="@+id/linked_notes_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:paddingBottom="16dp"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+    </ScrollView>
+
+    <!-- Checklist mode: ListView with items (replaces ScrollView when active) -->
+    <LinearLayout
+        android:id="@+id/checklist_container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <ListView
+            android:id="@+id/lv_checklist"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:divider="@color/checklist_divider"
+            android:dividerHeight="1px"
+            android:scrollbarStyle="outsideOverlay"
+            android:clipToPadding="false"
+            android:paddingBottom="8dp"
+            android:transcriptMode="disabled"
+            android:stackFromBottom="false" />
+
+        <LinearLayout
+            android:id="@+id/checklist_add_item"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:paddingLeft="28dp"
+            android:paddingRight="8dp"
+            android:background="@color/editor_bg"
+            android:clickable="true"
+            android:focusable="true">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_add"
+                android:scaleType="center"
+                android:layout_marginLeft="8dp"
+                android:layout_marginRight="12dp"
+                android:contentDescription="@string/add_checklist_item" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/add_checklist_item"
+                android:textColor="@color/text_hint"
+                android:textSize="15sp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- Bottom bar: Add | Checklist | Undo | Redo | Pin | (spacer) date (spacer) | TextFormat | More -->
+    <LinearLayout
+        android:id="@+id/formatting_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="@color/toolbar_bg"
+        android:elevation="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="4dp"
+        android:paddingRight="4dp">
+
+        <!-- Add button (opens BottomSheet) -->
+        <ImageButton
+            android:id="@+id/btn_add_attachment"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_add"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/add_attachment" />
+
+        <!-- Checklist toggle -->
+        <ImageButton
+            android:id="@+id/btn_checklist"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_checklist"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/checklist" />
+
+        <!-- Undo (moved from TopBar) -->
+        <ImageButton
+            android:id="@+id/btn_undo"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_undo"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/undo" />
+
+        <!-- Redo (moved from TopBar) -->
+        <ImageButton
+            android:id="@+id/btn_redo"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_redo"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/redo" />
+
+        <!-- Spacer -->
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- Text Format toggle -->
+        <ImageButton
+            android:id="@+id/btn_text_format"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_text_format"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/text_format" />
+
+        <!-- More/Color -->
+        <ImageButton
+            android:id="@+id/btn_color"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_more"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/more" />
+
+    </LinearLayout>
+
+</LinearLayout>

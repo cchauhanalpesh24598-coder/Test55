@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/bg_dialog"
+    android:padding="24dp">
+
+    <!-- Title -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/record_audio"
+        android:textColor="#FFFFFF"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:paddingBottom="16dp" />
+
+    <!-- Timer display -->
+    <TextView
+        android:id="@+id/tv_recording_timer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="00:00"
+        android:textColor="#FF4444"
+        android:textSize="48sp"
+        android:gravity="center"
+        android:fontFamily="monospace"
+        android:paddingTop="8dp"
+        android:paddingBottom="16dp" />
+
+    <!-- Status text -->
+    <TextView
+        android:id="@+id/tv_recording_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/start_recording"
+        android:textColor="#9AA0A6"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:paddingBottom="24dp" />
+
+    <!-- Control buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center">
+
+        <!-- Discard button -->
+        <ImageButton
+            android:id="@+id/btn_discard_recording"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_close"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/discard_recording"
+            android:visibility="gone" />
+
+        <!-- Record / Pause button -->
+        <ImageButton
+            android:id="@+id/btn_record_toggle"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:layout_marginLeft="24dp"
+            android:layout_marginRight="24dp"
+            android:background="@drawable/bg_fab"
+            android:src="@drawable/ic_mic"
+            android:scaleType="centerInside"
+            android:padding="16dp"
+            android:contentDescription="@string/start_recording" />
+
+        <!-- Stop / Save button -->
+        <ImageButton
+            android:id="@+id/btn_stop_recording"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_stop"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/stop_recording"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+</LinearLayout>

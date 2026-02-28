@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark Mode Overrides -->
+    <color name="colorBackground">#FF121212</color>
+    <color name="colorSurface">#FF1E1E1E</color>
+    <color name="colorCardBackground">#FF2D2D2D</color>
+    <color name="colorTextPrimary">#FFFFFFFF</color>
+    <color name="colorTextSecondary">#FFB0B0B0</color>
+    <color name="colorTextHint">#FF757575</color>
+    <color name="colorToolbar">#FF1E1E1E</color>
+    <color name="colorToolbarText">#FFFFFFFF</color>
+    <color name="colorToolbarIcon">#FFB0B0B0</color>
+    <color name="colorDrawerBackground">#FF1E1E1E</color>
+    <color name="colorDrawerItemSelected">#FF2D3A4E</color>
+    <color name="colorDrawerItemText">#FFE0E0E0</color>
+    <color name="colorDrawerDivider">#FF333333</color>
+    <color name="colorDivider">#FF333333</color>
+    <color name="colorSearchBackground">#FF2D2D2D</color>
+    <color name="colorSearchText">#FFFFFFFF</color>
+    <color name="colorSearchHint">#FF757575</color>
+    <color name="colorEditorToolbar">#FF1E1E1E</color>
+    <color name="colorRipple">#20FFFFFF</color>
+
+    <!-- NotallyX Note Color Palette (Dark mode - slightly muted) -->
+    <color name="note_coral">#FF6B4542</color>
+    <color name="note_orange">#FF6B5533</color>
+    <color name="note_sand">#FF6B6540</color>
+    <color name="note_storm">#FF3E5560</color>
+    <color name="note_fog">#FF4A5D63</color>
+    <color name="note_sage">#FF3E5D55</color>
+    <color name="note_mint">#FF4B6040</color>
+    <color name="note_dusk">#FF544560</color>
+    <color name="note_flower">#FF654150</color>
+    <color name="note_blossom">#FF635550</color>
+    <color name="note_clay">#FF5E5A48</color>
+</resources>
