@@ -17,6 +17,8 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.firebase.firestore.FirebaseFirestore;
+
 import com.mknotes.app.cloud.FirebaseAuthManager;
 import com.mknotes.app.crypto.CryptoManager;
 import com.mknotes.app.crypto.KeyManager;
@@ -134,13 +136,14 @@ public class MasterPasswordActivity extends Activity {
 
     /**
      * Check if vault exists in Firestore (for reinstall/new device scenario).
-     * If found, switch to unlock mode. If not, switch to create mode.
+     * If found, switch to unlock mode. If not, check for orphan notes safety.
      * SAFETY: Always tries Firestore before allowing create mode.
+     * If notes exist in cloud but vault metadata is missing, BLOCK vault creation.
      */
     private void checkFirestoreVault() {
         // SAFETY: If vault already exists locally (e.g. partial fetch), go to unlock
         if (keyManager.isVaultInitialized()) {
-            Log.d(TAG, "Vault already initialized locally, going to unlock mode");
+            Log.d(TAG, "[VAULT_CHECK] Vault already initialized locally, going to unlock mode");
             setupUnlockMode();
             return;
         }
@@ -155,24 +158,67 @@ public class MasterPasswordActivity extends Activity {
                 public void onResult(final boolean vaultFound) {
                     runOnUiThread(new Runnable() {
                         public void run() {
-                            btnAction.setEnabled(true);
                             if (vaultFound) {
-                                Log.d(TAG, "Vault found in Firestore, switching to unlock mode");
-                                // Vault found in Firestore -- show unlock mode
+                                Log.d(TAG, "[VAULT_EXISTS] Vault found in Firestore, switching to UNLOCK mode");
+                                btnAction.setEnabled(true);
                                 setupUnlockMode();
                             } else {
-                                Log.d(TAG, "No vault in Firestore, allowing create mode");
-                                // No vault in Firestore -- fresh user
-                                setupCreateMode();
+                                Log.d(TAG, "[VAULT_MISSING] No vault in Firestore, checking for orphan notes...");
+                                // SAFETY CHECK: Before allowing create, check if notes exist
+                                checkCloudNotesBeforeCreate();
                             }
                         }
                     });
                 }
             });
         } else {
-            // Not logged in -- show create mode
+            // Not logged in -- show create mode (offline use)
+            Log.d(TAG, "[VAULT_CHECK] Not logged in, allowing create mode");
             setupCreateMode();
         }
+    }
+
+    /**
+     * SAFETY: Check if notes exist in Firestore BEFORE allowing vault creation.
+     * If notes exist but vault metadata is missing, creating a new vault
+     * would generate a new salt/DEK, making all existing notes permanently undecryptable.
+     */
+    private void checkCloudNotesBeforeCreate() {
+        keyManager.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
+            public void onResult(final boolean notesExist) {
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        btnAction.setEnabled(true);
+                        if (notesExist) {
+                            // DANGER: Notes exist but vault metadata is missing!
+                            Log.e(TAG, "[SAFETY_BLOCK] Notes exist in Firestore but vault metadata is MISSING. "
+                                    + "Blocking new vault creation to prevent data loss.");
+                            setupErrorMode(getString(R.string.vault_metadata_missing_error));
+                        } else {
+                            // No notes, no vault -- truly fresh user, allow create
+                            Log.d(TAG, "[FRESH_USER] No notes and no vault in Firestore, allowing create mode");
+                            setupCreateMode();
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /**
+     * Show an error state instead of create/unlock when vault metadata is missing
+     * but encrypted notes exist. User must NOT create a new vault in this scenario.
+     */
+    private void setupErrorMode(String errorMessage) {
+        toolbarTitle.setText(R.string.master_password_title_create);
+        textSubtitle.setText(errorMessage);
+        editPassword.setVisibility(View.GONE);
+        editConfirmPassword.setVisibility(View.GONE);
+        btnAction.setVisibility(View.GONE);
+        if (cbShowPassword != null) cbShowPassword.setVisibility(View.GONE);
+        if (textStrengthHint != null) textStrengthHint.setVisibility(View.GONE);
+        textError.setText(errorMessage);
+        textError.setVisibility(View.VISIBLE);
     }
 
     private void setupCreateMode() {
@@ -221,11 +267,72 @@ public class MasterPasswordActivity extends Activity {
             return;
         }
 
-        btnAction.setEnabled(false);
+        // SAFETY CHECK: If vault already exists locally, do NOT create new one
+        if (keyManager.isVaultInitialized()) {
+            Log.w(TAG, "[SAFETY_BLOCK] handleCreate() blocked: vault already exists locally. Switching to unlock mode.");
+            setupUnlockMode();
+            return;
+        }
 
-        // Initialize new 2-layer vault via KeyManager
+        btnAction.setEnabled(false);
+        textSubtitle.setText("Creating vault...");
+
+        // SAFETY CHECK: Double-check Firestore before creating vault
+        // This prevents race conditions where vault was uploaded between fetch and create
+        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
+        if (authManager.isLoggedIn()) {
+            Log.d(TAG, "[VAULT_CREATE] Double-checking Firestore before vault creation...");
+            final String pwd = password;
+            keyManager.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
+                public void onResult(final boolean vaultFound) {
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            if (vaultFound) {
+                                // Vault appeared in Firestore -- switch to unlock, do NOT create
+                                Log.w(TAG, "[SAFETY_BLOCK] Vault found in Firestore during create! Switching to unlock mode.");
+                                btnAction.setEnabled(true);
+                                textSubtitle.setText(R.string.master_password_subtitle_unlock);
+                                setupUnlockMode();
+                            } else {
+                                // Also check if notes exist (orphan notes safety)
+                                keyManager.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
+                                    public void onResult(final boolean notesExist) {
+                                        runOnUiThread(new Runnable() {
+                                            public void run() {
+                                                if (notesExist) {
+                                                    // DANGER: Notes exist without vault metadata
+                                                    Log.e(TAG, "[SAFETY_BLOCK] Notes exist in cloud but no vault metadata. "
+                                                            + "Refusing to create new vault.");
+                                                    btnAction.setEnabled(true);
+                                                    showError(getString(R.string.vault_metadata_missing_error));
+                                                } else {
+                                                    // All clear -- proceed with vault creation
+                                                    performVaultCreation(pwd);
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+                            }
+                        }
+                    });
+                }
+            });
+        } else {
+            // Not logged in -- safe to create locally
+            Log.d(TAG, "[VAULT_CREATE] Not logged in, creating vault locally");
+            performVaultCreation(password);
+        }
+    }
+
+    /**
+     * Actually create the vault after all safety checks have passed.
+     */
+    private void performVaultCreation(String password) {
+        Log.d(TAG, "[VAULT_CREATE] All safety checks passed, initializing vault...");
         boolean success = keyManager.initializeVault(password);
         if (success) {
+            Log.d(TAG, "[VAULT_CREATE] Vault initialized successfully");
             sessionManager.setPasswordSetFlag(true);
             sessionManager.updateSessionTimestamp();
             sessionManager.setEncryptionMigrated(true);
@@ -236,6 +343,7 @@ public class MasterPasswordActivity extends Activity {
             Toast.makeText(this, R.string.master_password_set_success, Toast.LENGTH_SHORT).show();
             launchMain();
         } else {
+            Log.e(TAG, "[VAULT_CREATE] initializeVault() returned false");
             btnAction.setEnabled(true);
             showError(getString(R.string.master_password_error_generic));
         }
