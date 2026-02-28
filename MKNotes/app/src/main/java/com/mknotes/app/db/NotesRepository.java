@@ -63,17 +63,26 @@ public class NotesRepository {
     /**
      * Decrypt a string field using the current key.
      * Uses new CryptoManager (2-layer DEK system).
-     * Returns decrypted string or original value if decryption fails.
+     * On failure: returns "[Decryption Failed]" marker so UI shows proper error.
+     * NEVER returns raw encrypted hex to UI.
      */
     private String decryptField(String ciphertext, byte[] key) {
         if (ciphertext == null || ciphertext.length() == 0) {
             return "";
         }
         if (key == null) {
+            // No key -- if data looks encrypted, show failure marker
+            if (CryptoManager.isEncrypted(ciphertext)) {
+                return CryptoManager.DECRYPT_FAILED_MARKER;
+            }
             return ciphertext;
         }
         String decrypted = CryptoManager.decrypt(ciphertext, key);
-        return decrypted != null ? decrypted : ciphertext;
+        if (decrypted == null) {
+            // Decryption failed (wrong key / corrupted) -- show failure marker
+            return CryptoManager.DECRYPT_FAILED_MARKER;
+        }
+        return decrypted;
     }
 
     // ============ NOTES ============
