@@ -416,4 +416,15 @@
 
     <!-- Vault Metadata Safety -->
     <string name="vault_metadata_missing_error">Vault metadata missing. Cannot decrypt existing notes. Your encryption keys were not found in the cloud. Please contact support or restore from backup.</string>
+
+    <!-- Legacy Recovery Mode -->
+    <string name="legacy_recovery_title">Recover Your Notes</string>
+    <string name="legacy_recovery_subtitle">Your notes use an older encryption format. Enter your master password to migrate them to the new secure system.</string>
+    <string name="legacy_recovery_password_hint">Enter your old master password</string>
+    <string name="legacy_recovery_btn">Recover &amp; Migrate</string>
+    <string name="legacy_recovery_verifying">Verifying master password...</string>
+    <string name="legacy_recovery_migrating">Migrating notes to new encryption system. Please wait...</string>
+    <string name="legacy_recovery_success">Notes migrated successfully to new encryption system!</string>
+    <string name="legacy_recovery_wrong_password">Incorrect master password. Please try again with your original password.</string>
+    <string name="legacy_recovery_migration_failed">Migration failed. Your original notes are preserved.</string>
 </resources>
