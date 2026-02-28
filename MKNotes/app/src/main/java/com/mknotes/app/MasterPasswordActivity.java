@@ -4,10 +4,15 @@ import android.app.Activity;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.method.HideReturnsTransformationMethod;
+import android.text.method.PasswordTransformationMethod;
+import android.util.Log;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -33,6 +38,7 @@ import com.mknotes.app.util.SessionManager;
  */
 public class MasterPasswordActivity extends Activity {
 
+    private static final String TAG = "MasterPasswordActivity";
     private static final int MODE_CREATE = 0;
     private static final int MODE_UNLOCK = 1;
 
@@ -47,6 +53,7 @@ public class MasterPasswordActivity extends Activity {
     private TextView textError;
     private TextView textStrengthHint;
     private Button btnAction;
+    private CheckBox cbShowPassword;
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -98,13 +105,46 @@ public class MasterPasswordActivity extends Activity {
         textError = (TextView) findViewById(R.id.text_error);
         textStrengthHint = (TextView) findViewById(R.id.text_strength_hint);
         btnAction = (Button) findViewById(R.id.btn_action);
+        cbShowPassword = (CheckBox) findViewById(R.id.cb_show_password);
+
+        // Show/Hide password toggle
+        if (cbShowPassword != null) {
+            cbShowPassword.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                    if (isChecked) {
+                        editPassword.setTransformationMethod(HideReturnsTransformationMethod.getInstance());
+                        if (editConfirmPassword.getVisibility() == View.VISIBLE) {
+                            editConfirmPassword.setTransformationMethod(HideReturnsTransformationMethod.getInstance());
+                        }
+                    } else {
+                        editPassword.setTransformationMethod(PasswordTransformationMethod.getInstance());
+                        if (editConfirmPassword.getVisibility() == View.VISIBLE) {
+                            editConfirmPassword.setTransformationMethod(PasswordTransformationMethod.getInstance());
+                        }
+                    }
+                    // Move cursor to end
+                    editPassword.setSelection(editPassword.getText().length());
+                    if (editConfirmPassword.getVisibility() == View.VISIBLE) {
+                        editConfirmPassword.setSelection(editConfirmPassword.getText().length());
+                    }
+                }
+            });
+        }
     }
 
     /**
      * Check if vault exists in Firestore (for reinstall/new device scenario).
      * If found, switch to unlock mode. If not, switch to create mode.
+     * SAFETY: Always tries Firestore before allowing create mode.
      */
     private void checkFirestoreVault() {
+        // SAFETY: If vault already exists locally (e.g. partial fetch), go to unlock
+        if (keyManager.isVaultInitialized()) {
+            Log.d(TAG, "Vault already initialized locally, going to unlock mode");
+            setupUnlockMode();
+            return;
+        }
+
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
         if (authManager.isLoggedIn()) {
             // Show loading state
@@ -117,9 +157,11 @@ public class MasterPasswordActivity extends Activity {
                         public void run() {
                             btnAction.setEnabled(true);
                             if (vaultFound) {
+                                Log.d(TAG, "Vault found in Firestore, switching to unlock mode");
                                 // Vault found in Firestore -- show unlock mode
                                 setupUnlockMode();
                             } else {
+                                Log.d(TAG, "No vault in Firestore, allowing create mode");
                                 // No vault in Firestore -- fresh user
                                 setupCreateMode();
                             }
@@ -212,9 +254,12 @@ public class MasterPasswordActivity extends Activity {
         // Check if this is new 2-layer system or old system needing migration
         if (keyManager.isVaultInitialized() && keyManager.getVaultVersion() >= KeyManager.CURRENT_VAULT_VERSION) {
             // New system: unlock via KeyManager (HMAC verification)
+            Log.d(TAG, "Attempting unlock with new 2-layer system");
             boolean valid = keyManager.unlockVault(password);
             if (valid) {
+                sessionManager.setPasswordSetFlag(true);
                 sessionManager.updateSessionTimestamp();
+                sessionManager.setEncryptionMigrated(true);
                 launchMain();
             } else {
                 btnAction.setEnabled(true);
@@ -223,9 +268,11 @@ public class MasterPasswordActivity extends Activity {
             }
         } else if (sessionManager.hasOldSystemCredentials()) {
             // Old system: verify with old method, then migrate to new system
+            Log.d(TAG, "Attempting unlock with old system + migration");
             handleOldSystemUnlock(password);
         } else if (keyManager.isVaultInitialized()) {
             // Vault from Firestore (reinstall) -- try unlock
+            Log.d(TAG, "Attempting unlock with Firestore vault (reinstall scenario)");
             boolean valid = keyManager.unlockVault(password);
             if (valid) {
                 sessionManager.setPasswordSetFlag(true);
