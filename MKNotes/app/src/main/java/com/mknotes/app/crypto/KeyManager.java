@@ -118,11 +118,20 @@ public class KeyManager {
      * First-time vault setup: generate salt, DEK, encrypt DEK, compute HMAC tag.
      * Uses DEFAULT_ITERATIONS for the brand-new vault.
      *
+     * SAFETY: If vault already exists locally or in Firestore, this method
+     * REFUSES to overwrite. Caller must use unlockVault() instead.
+     *
      * @param password user's chosen master password
      * @return true on success
      */
     public boolean initializeVault(String password) {
         if (password == null || password.length() == 0) {
+            return false;
+        }
+
+        // SAFETY CHECK: Never overwrite existing vault
+        if (isVaultInitialized()) {
+            Log.w(TAG, "initializeVault() blocked: vault already exists locally. Use unlockVault() instead.");
             return false;
         }
 
@@ -136,6 +145,8 @@ public class KeyManager {
             dek = CryptoManager.generateDEK();
 
             int iterations = CryptoManager.DEFAULT_ITERATIONS;
+
+            Log.d(TAG, "[VAULT_INIT] salt=" + CryptoManager.bytesToHex(salt).substring(0, 8) + "..., iterations=" + iterations);
 
             // Derive master key (KEK)
             masterKey = CryptoManager.deriveKey(password, salt, iterations);
@@ -227,28 +238,42 @@ public class KeyManager {
 
             byte[] salt = CryptoManager.hexToBytes(saltHex);
 
+            Log.d(TAG, "[VAULT_UNLOCK] salt=" + saltHex.substring(0, Math.min(8, saltHex.length()))
+                    + "..., iterations=" + iterations
+                    + ", encDEK_len=" + encryptedDEK.length()
+                    + ", tag_len=" + storedTag.length());
+
             // Derive master key with stored iterations
             masterKey = CryptoManager.deriveKey(password, salt, iterations);
             if (masterKey == null) {
+                Log.e(TAG, "[VAULT_UNLOCK] deriveKey returned null");
                 return false;
             }
+
+            Log.d(TAG, "[VAULT_UNLOCK] masterKey derived, len=" + masterKey.length);
 
             // HMAC verification (constant-time)
             boolean verified = CryptoManager.verifyTag(masterKey, storedTag);
             if (!verified) {
                 // Wrong password -- zero-fill and return false, no crash
+                Log.w(TAG, "[VAULT_UNLOCK] HMAC verification FAILED -- wrong password");
                 CryptoManager.zeroFill(masterKey);
                 masterKey = null;
                 return false;
             }
 
+            Log.d(TAG, "[VAULT_UNLOCK] HMAC verification passed");
+
             // Decrypt DEK
             byte[] dek = CryptoManager.decryptDEK(encryptedDEK, masterKey);
             if (dek == null) {
+                Log.e(TAG, "[VAULT_UNLOCK] DEK decryption FAILED");
                 CryptoManager.zeroFill(masterKey);
                 masterKey = null;
                 return false;
             }
+
+            Log.d(TAG, "[VAULT_UNLOCK] DEK decrypted, len=" + dek.length);
 
             // Zero-fill master key IMMEDIATELY
             CryptoManager.zeroFill(masterKey);
@@ -504,6 +529,13 @@ public class KeyManager {
                                     if (keyVer <= 0) {
                                         keyVer = 1;
                                     }
+
+                                    Log.d(TAG, "[VAULT_FETCH] Found vault in Firestore: salt="
+                                            + salt.substring(0, Math.min(8, salt.length()))
+                                            + "..., iterations=" + iterations
+                                            + ", encDEK_len=" + encDEK.length()
+                                            + ", tag_len=" + tag.length()
+                                            + ", keyVer=" + keyVer);
 
                                     prefs.edit()
                                             .putString(KEY_SALT, salt)
