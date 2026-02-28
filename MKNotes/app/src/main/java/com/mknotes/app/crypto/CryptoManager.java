@@ -98,6 +98,23 @@ public final class CryptoManager {
         }
     }
 
+    // ======================== LEGACY KEY DERIVATION ========================
+
+    /** Old system iteration count (CryptoUtils used 15000 fixed). */
+    public static final int LEGACY_ITERATIONS = 15_000;
+
+    /**
+     * Derive a 256-bit key using legacy parameters (PBKDF2WithHmacSHA256, 15000 iterations).
+     * Used ONLY for legacy migration when crypto_metadata is missing but old encrypted notes exist.
+     *
+     * @param password user's master password
+     * @param salt     16-byte salt (from old system or derived)
+     * @return byte[32] derived key, or null on failure
+     */
+    public static byte[] deriveLegacyKey(String password, byte[] salt) {
+        return deriveKey(password, salt, LEGACY_ITERATIONS);
+    }
+
     // ======================== DEK WRAPPING (KEK encrypts DEK) ========================
 
     /**
@@ -280,6 +297,23 @@ public final class CryptoManager {
             return DECRYPT_FAILED_MARKER;
         }
         return result;
+    }
+
+    // ======================== LEGACY DECRYPTION ========================
+
+    /**
+     * Try decrypting data using a legacy master key (direct key, no DEK layer).
+     * Returns decrypted plaintext on success, null on failure.
+     * Used to verify legacy master password by attempting to decrypt a sample note.
+     *
+     * @param encryptedData "ivHex:ciphertextHex" encrypted by old CryptoUtils
+     * @param legacyKey     byte[32] key derived via legacy PBKDF2 (15000 iterations)
+     * @return decrypted plaintext, or null if key is wrong / data corrupted
+     */
+    public static String decryptWithLegacyKey(String encryptedData, byte[] legacyKey) {
+        // Old CryptoUtils used the same AES-256-GCM format (ivHex:ciphertextHex)
+        // so we can reuse the standard decrypt method
+        return decrypt(encryptedData, legacyKey);
     }
 
     // ======================== HMAC VERIFICATION ========================
