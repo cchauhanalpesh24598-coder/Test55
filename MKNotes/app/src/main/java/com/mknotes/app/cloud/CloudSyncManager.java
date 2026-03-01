@@ -724,20 +724,21 @@ public class CloudSyncManager {
 
     // ======================== VAULT METADATA SYNC ========================
 
-    private static final String COLLECTION_VAULT = "vault";
-    private static final String DOC_CRYPTO_METADATA = "crypto_metadata";
+    private static final String COLLECTION_CRYPTO_METADATA = "crypto_metadata";
+    private static final String DOC_VAULT = "vault";
 
     /**
-     * Upload vault metadata (salt, encryptedDEK, verifyTag, iterations, keyVersion)
-     * to Firestore: users/{uid}/vault/crypto_metadata
+     * Upload vault metadata to Firestore: users/{uid}/crypto_metadata/vault
+     * NOTE: Prefer using KeyManager.uploadVaultToFirestore() directly.
+     * This is kept for backward compatibility.
      */
     public void uploadVaultMetadata(Map<String, Object> vaultData) {
         String uid = getUid();
         if (uid == null || vaultData == null) return;
 
         firestore.collection(COLLECTION_USERS).document(uid)
-                .collection(COLLECTION_VAULT).document(DOC_CRYPTO_METADATA)
-                .set(vaultData, SetOptions.merge())
+                .collection(COLLECTION_CRYPTO_METADATA).document(DOC_VAULT)
+                .set(vaultData)
                 .addOnSuccessListener(new OnSuccessListener<Void>() {
                     public void onSuccess(Void unused) {
                         Log.d(TAG, "Vault metadata uploaded to Firestore");
@@ -751,8 +752,8 @@ public class CloudSyncManager {
     }
 
     /**
-     * Fetch vault metadata from Firestore: users/{uid}/vault/crypto_metadata
-     * Used on reinstall/new device to recover salt, encryptedDEK, verifyTag, iterations.
+     * Fetch vault metadata from Firestore: users/{uid}/crypto_metadata/vault
+     * NOTE: Prefer using KeyManager.fetchVaultFromFirestore() directly.
      */
     public void fetchVaultMetadata(final VaultMetadataCallback callback) {
         String uid = getUid();
@@ -762,7 +763,7 @@ public class CloudSyncManager {
         }
 
         firestore.collection(COLLECTION_USERS).document(uid)
-                .collection(COLLECTION_VAULT).document(DOC_CRYPTO_METADATA)
+                .collection(COLLECTION_CRYPTO_METADATA).document(DOC_VAULT)
                 .get()
                 .addOnSuccessListener(new OnSuccessListener<DocumentSnapshot>() {
                     public void onSuccess(DocumentSnapshot doc) {
