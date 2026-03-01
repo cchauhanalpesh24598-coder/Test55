@@ -544,6 +544,7 @@ public class SettingsActivity extends Activity {
             String salt = km.getLocalSalt();
             String encDEK = km.getLocalEncryptedDEK();
             String verifyTag = km.getLocalVerifyTag();
+            String vaultIV = km.getLocalIV();
             int iterations = km.getIterations();
             if (salt != null && salt.length() > 0) {
                 root.put("salt", salt);
@@ -553,6 +554,9 @@ public class SettingsActivity extends Activity {
             }
             if (verifyTag != null && verifyTag.length() > 0) {
                 root.put("verifyTag", verifyTag);
+            }
+            if (vaultIV != null && vaultIV.length() > 0) {
+                root.put("vaultIV", vaultIV);
             }
             root.put("iterations", iterations);
             root.put("keyVersion", 1);
@@ -717,15 +721,17 @@ public class SettingsActivity extends Activity {
             String backupSalt = root.optString("salt", "");
             String backupEncDEK = root.optString("encryptedDEK", "");
             String backupVerifyTag = root.optString("verifyTag", "");
+            String backupVaultIV = root.optString("vaultIV", "");
             int backupIterations = root.optInt("iterations", 0);
             if (backupSalt.length() > 0 && backupEncDEK.length() > 0
-                    && backupVerifyTag.length() > 0 && backupIterations > 0) {
+                    && backupVerifyTag.length() > 0 && backupVaultIV.length() > 0
+                    && backupIterations > 0) {
                 KeyManager km = KeyManager.getInstance(this);
                 if (!km.isVaultInitialized()) {
                     // Fresh device -- restore vault metadata from backup.
                     // User MUST enter the SAME master password from original device.
                     km.restoreVaultFromBackup(backupSalt, backupEncDEK,
-                            backupVerifyTag, backupIterations);
+                            backupVaultIV, backupVerifyTag, backupIterations);
                 }
             }
 
