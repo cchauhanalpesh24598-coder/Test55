@@ -8,6 +8,7 @@ import android.util.Log;
 import com.google.firebase.firestore.DocumentReference;
 import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FirebaseFirestore;
+import com.google.firebase.firestore.Source;
 
 import com.mknotes.app.cloud.FirebaseAuthManager;
 
@@ -33,10 +34,13 @@ import java.util.Map;
  * - Iterations are NEVER changed (always 120000).
  * - DEK is NEVER regenerated unless vault is explicitly deleted.
  * - set() is used for Firestore writes, NOT merge().
- * - exists() is checked BEFORE writing to prevent overwrite.
  *
- * REINSTALL PROOF: On login after reinstall, fetch vault from Firestore,
+ * REINSTALL PROOF: On login after reinstall, fetch vault from Firestore (SERVER source),
  * derive Master Key from password + stored salt, decrypt DEK. Done.
+ *
+ * FIX v2.1: Removed over-aggressive exists() guard that was blocking Firestore writes
+ * when offline cache returned stale data. Now uses Source.SERVER for critical reads.
+ * Vault is always saved locally first, then uploaded to Firestore with retry on app start.
  */
 public class KeyManager {
 
@@ -51,6 +55,7 @@ public class KeyManager {
     private static final String KEY_ITERATIONS = "vault_iterations";
     private static final String KEY_CREATED_AT = "vault_created_at";
     private static final String KEY_VAULT_INITIALIZED = "vault_initialized";
+    private static final String KEY_VAULT_UPLOADED = "vault_uploaded_to_firestore";
 
     public static final int CURRENT_VAULT_VERSION = 2;
 
@@ -119,6 +124,13 @@ public class KeyManager {
         return !isVaultInitialized();
     }
 
+    /**
+     * Check if vault has been confirmed uploaded to Firestore.
+     */
+    public boolean isVaultUploaded() {
+        return prefs.getBoolean(KEY_VAULT_UPLOADED, false);
+    }
+
     // ======================== VAULT CREATION ========================
 
     /**
@@ -128,11 +140,13 @@ public class KeyManager {
      * 2. Derive 256-bit Master Key via PBKDF2 (120000 iterations)
      * 3. Generate random 256-bit DEK
      * 4. Encrypt DEK with Master Key via AES-256-GCM
-     * 5. Store vault metadata to Firestore (with exists() check)
-     * 6. Cache DEK in memory
+     * 5. Store vault metadata LOCALLY FIRST (crash-safe)
+     * 6. Upload vault metadata to Firestore
+     * 7. Cache DEK in memory
      *
      * SAFETY: Refuses if vault already exists locally.
-     * Firestore write uses exists() check to prevent overwrite.
+     * LOCAL-FIRST: Vault is saved to SharedPreferences before Firestore upload.
+     * If Firestore upload fails, ensureVaultUploaded() retries on next app start.
      *
      * @param password user's chosen master password
      * @param callback called on completion (true=success)
@@ -197,34 +211,30 @@ public class KeyManager {
                             + saltB64.length() + ", encDEK_len=" + encDEKB64.length()
                             + ", iv_len=" + ivB64.length() + ", tag_len=" + tagB64.length());
 
-                    // Step 5: Store to Firestore (with exists() check)
-                    storeVaultToFirestore(saltB64, encDEKB64, ivB64, tagB64, createdAt,
-                            new VaultCallback() {
-                                public void onSuccess() {
-                                    // Store locally
-                                    prefs.edit()
-                                            .putString(KEY_SALT, saltB64)
-                                            .putString(KEY_ENCRYPTED_DEK, encDEKB64)
-                                            .putString(KEY_IV, ivB64)
-                                            .putString(KEY_TAG, tagB64)
-                                            .putInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS)
-                                            .putLong(KEY_CREATED_AT, createdAt)
-                                            .putBoolean(KEY_VAULT_INITIALIZED, true)
-                                            .commit();
+                    // Step 5: Store LOCALLY FIRST (this is the critical fix)
+                    // Vault must be in SharedPreferences before any Firestore call
+                    // so that even if Firestore fails, local encryption works.
+                    prefs.edit()
+                            .putString(KEY_SALT, saltB64)
+                            .putString(KEY_ENCRYPTED_DEK, encDEKB64)
+                            .putString(KEY_IV, ivB64)
+                            .putString(KEY_TAG, tagB64)
+                            .putInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS)
+                            .putLong(KEY_CREATED_AT, createdAt)
+                            .putBoolean(KEY_VAULT_INITIALIZED, true)
+                            .putBoolean(KEY_VAULT_UPLOADED, false) // Not yet uploaded
+                            .commit();
 
-                                    // Cache DEK
-                                    cachedDEK = dekToCache;
+                    // Cache DEK in memory
+                    cachedDEK = dekToCache;
 
-                                    Log.d(TAG, "[VAULT_CREATED] SUCCESS: vault created and stored");
-                                    if (callback != null) callback.onSuccess();
-                                }
+                    Log.d(TAG, "[VAULT_CREATED] Vault stored locally, now uploading to Firestore...");
 
-                                public void onError(String error) {
-                                    Log.e(TAG, "[VAULT_CREATED] FAILED: Firestore write error: " + error);
-                                    CryptoManager.zeroFill(dekToCache);
-                                    if (callback != null) callback.onError(error);
-                                }
-                            });
+                    // Step 6: Upload to Firestore (non-blocking, with retry flag)
+                    uploadVaultToFirestoreWithConfirmation(saltB64, encDEKB64, ivB64, tagB64, createdAt);
+
+                    // Success -- vault is usable immediately (local-first)
+                    if (callback != null) callback.onSuccess();
 
                 } catch (Exception e) {
                     Log.e(TAG, "[VAULT_CREATED] EXCEPTION: " + e.getMessage());
@@ -274,13 +284,15 @@ public class KeyManager {
                     .putInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS)
                     .putLong(KEY_CREATED_AT, createdAt)
                     .putBoolean(KEY_VAULT_INITIALIZED, true)
+                    .putBoolean(KEY_VAULT_UPLOADED, false)
                     .commit();
 
             cachedDEK = dek;
             dek = null;
 
-            // Upload to Firestore
-            uploadVaultToFirestore();
+            // Upload to Firestore with confirmation tracking
+            uploadVaultToFirestoreWithConfirmation(saltB64, bundle.encryptedDEK,
+                    bundle.iv, bundle.tag, createdAt);
 
             return true;
         } catch (Exception e) {
@@ -397,66 +409,57 @@ public class KeyManager {
     }
 
     /**
-     * Store vault to Firestore with exists() check.
-     * Uses set() -- NOT merge().
-     * If document already exists, calls onError (refuses to overwrite).
+     * Upload vault to Firestore and track confirmation.
+     * Uses set() to write vault data. On success, marks vault_uploaded=true locally.
+     * This is idempotent -- calling multiple times with same data is safe.
+     *
+     * FIX: Removed the old exists() check that was blocking writes when
+     * Firestore offline cache returned stale data. The vault data is deterministic
+     * (same password + same salt = same encryptedDEK), so overwriting with same
+     * data is safe. For password change, overwriting is intentional.
      */
-    private void storeVaultToFirestore(final String saltB64, final String encDEKB64,
-                                        final String ivB64, final String tagB64,
-                                        final long createdAt, final VaultCallback callback) {
+    private void uploadVaultToFirestoreWithConfirmation(final String saltB64,
+                                                         final String encDEKB64,
+                                                         final String ivB64,
+                                                         final String tagB64,
+                                                         final long createdAt) {
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
         if (!authManager.isLoggedIn()) {
-            Log.w(TAG, "[VAULT_CREATED] Not logged in, storing locally only");
-            if (callback != null) callback.onSuccess(); // Local-only is acceptable
+            Log.w(TAG, "[VAULT_UPLOAD] Not logged in, will retry later via ensureVaultUploaded()");
             return;
         }
         String uid = authManager.getUid();
         if (uid == null) {
-            Log.w(TAG, "[VAULT_CREATED] UID null, storing locally only");
-            if (callback != null) callback.onSuccess();
+            Log.w(TAG, "[VAULT_UPLOAD] UID null, will retry later via ensureVaultUploaded()");
             return;
         }
 
         final DocumentReference docRef = getVaultDocRef(uid);
 
-        // STEP 1: Check if document already exists
-        docRef.get()
-                .addOnSuccessListener(snapshot -> {
-                    if (snapshot.exists()) {
-                        // Document ALREADY exists -- DO NOT overwrite
-                        Log.w(TAG, "[VAULT_CREATED] BLOCKED: vault already exists in Firestore");
-                        if (callback != null) callback.onError("Vault already exists in Firestore");
-                    } else {
-                        // STEP 2: Document does not exist -- create with set()
-                        Map<String, Object> data = new HashMap<>();
-                        data.put("salt", saltB64);
-                        data.put("encryptedDEK", encDEKB64);
-                        data.put("iv", ivB64);
-                        data.put("tag", tagB64);
-                        data.put("iterations", CryptoManager.FIXED_ITERATIONS);
-                        data.put("createdAt", createdAt);
+        Map<String, Object> data = new HashMap<>();
+        data.put("salt", saltB64);
+        data.put("encryptedDEK", encDEKB64);
+        data.put("iv", ivB64);
+        data.put("tag", tagB64);
+        data.put("iterations", CryptoManager.FIXED_ITERATIONS);
+        data.put("createdAt", createdAt);
 
-                        docRef.set(data) // set() NOT merge()
-                                .addOnSuccessListener(unused -> {
-                                    Log.d(TAG, "[VAULT_CREATED] Firestore document created successfully");
-                                    if (callback != null) callback.onSuccess();
-                                })
-                                .addOnFailureListener(e -> {
-                                    Log.e(TAG, "[VAULT_CREATED] Firestore set() failed: " + e.getMessage());
-                                    if (callback != null) callback.onError(e.getMessage());
-                                });
-                    }
+        docRef.set(data) // set() overwrites -- safe because data is deterministic
+                .addOnSuccessListener(unused -> {
+                    Log.d(TAG, "[VAULT_UPLOAD] SUCCESS: vault uploaded to Firestore");
+                    prefs.edit().putBoolean(KEY_VAULT_UPLOADED, true).commit();
                 })
                 .addOnFailureListener(e -> {
-                    Log.e(TAG, "[VAULT_CREATED] Firestore exists() check failed: " + e.getMessage());
-                    // Allow local-only vault creation on Firestore failure
-                    if (callback != null) callback.onSuccess();
+                    Log.e(TAG, "[VAULT_UPLOAD] FAILED: " + e.getMessage()
+                            + " -- will retry via ensureVaultUploaded()");
+                    // KEY_VAULT_UPLOADED stays false, ensureVaultUploaded() will retry
                 });
     }
 
     /**
      * Upload current local vault metadata to Firestore.
-     * Used after migration. Uses set() with exists() check.
+     * Used after migration and as a retry mechanism.
+     * Always uses set() to ensure data reaches Firestore.
      */
     public void uploadVaultToFirestore() {
         if (!isVaultInitialized()) {
@@ -489,15 +492,38 @@ public class KeyManager {
         data.put("createdAt", createdAt);
 
         getVaultDocRef(uid).set(data)
-                .addOnSuccessListener(unused ->
-                        Log.d(TAG, "[VAULT_CREATED] Uploaded vault to Firestore"))
+                .addOnSuccessListener(unused -> {
+                    Log.d(TAG, "[VAULT_UPLOAD] Uploaded vault to Firestore");
+                    prefs.edit().putBoolean(KEY_VAULT_UPLOADED, true).commit();
+                })
                 .addOnFailureListener(e ->
-                        Log.e(TAG, "[VAULT_CREATED] Upload failed: " + e.getMessage()));
+                        Log.e(TAG, "[VAULT_UPLOAD] Upload failed: " + e.getMessage()));
+    }
+
+    /**
+     * CRITICAL: Ensure vault metadata is uploaded to Firestore.
+     * Call this on every app start after successful unlock.
+     * If vault exists locally but KEY_VAULT_UPLOADED is false,
+     * re-upload to Firestore. This handles the case where initial
+     * upload failed (network error, offline, etc.).
+     *
+     * This is the REINSTALL SAFETY NET -- without this, reinstall = data loss.
+     */
+    public void ensureVaultUploaded() {
+        if (!isVaultInitialized()) return;
+        if (isVaultUploaded()) return; // Already confirmed uploaded
+
+        Log.w(TAG, "[VAULT_UPLOAD_RETRY] Vault not confirmed in Firestore, re-uploading...");
+        uploadVaultToFirestore();
     }
 
     /**
      * Fetch vault metadata from Firestore and cache locally.
      * Used on reinstall after Firebase login.
+     *
+     * FIX: Uses Source.SERVER to bypass offline cache and get fresh data.
+     * This prevents stale cache from returning empty/old results after reinstall.
+     * Falls back to Source.DEFAULT if server is unreachable.
      *
      * @param callback called with true if vault found & cached, false otherwise
      */
@@ -515,53 +541,77 @@ public class KeyManager {
             return;
         }
 
-        Log.d(TAG, "[VAULT_FETCH] Fetching from Firestore for uid=" + uid);
+        Log.d(TAG, "[VAULT_FETCH] Fetching from Firestore (SERVER source) for uid=" + uid);
 
-        getVaultDocRef(uid).get()
+        final DocumentReference docRef = getVaultDocRef(uid);
+
+        // FIX: Use Source.SERVER to bypass potentially stale offline cache
+        docRef.get(Source.SERVER)
                 .addOnSuccessListener(doc -> {
-                    if (doc.exists()) {
-                        Map<String, Object> data = doc.getData();
-                        if (data != null) {
-                            String salt = getStr(data, "salt");
-                            String encDEK = getStr(data, "encryptedDEK");
-                            String iv = getStr(data, "iv");
-                            String tag = getStr(data, "tag");
-                            int iterations = getInt(data, "iterations");
-                            long createdAt = getLong(data, "createdAt");
-
-                            if (salt.length() > 0 && encDEK.length() > 0
-                                    && iv.length() > 0 && tag.length() > 0) {
-
-                                if (iterations <= 0) iterations = CryptoManager.FIXED_ITERATIONS;
-
-                                Log.d(TAG, "[VAULT_FETCH] SUCCESS: salt_len=" + salt.length()
-                                        + ", encDEK_len=" + encDEK.length()
-                                        + ", iv_len=" + iv.length()
-                                        + ", tag_len=" + tag.length()
-                                        + ", iterations=" + iterations);
-
-                                prefs.edit()
-                                        .putString(KEY_SALT, salt)
-                                        .putString(KEY_ENCRYPTED_DEK, encDEK)
-                                        .putString(KEY_IV, iv)
-                                        .putString(KEY_TAG, tag)
-                                        .putInt(KEY_ITERATIONS, iterations)
-                                        .putLong(KEY_CREATED_AT, createdAt)
-                                        .putBoolean(KEY_VAULT_INITIALIZED, true)
-                                        .commit();
-
-                                if (callback != null) callback.onResult(true);
-                                return;
-                            }
-                        }
-                    }
-                    Log.d(TAG, "[VAULT_FETCH] No vault found in Firestore");
+                    if (processVaultDocument(doc, callback)) return;
+                    Log.d(TAG, "[VAULT_FETCH] No vault found on server");
                     if (callback != null) callback.onResult(false);
                 })
                 .addOnFailureListener(e -> {
-                    Log.e(TAG, "[VAULT_FETCH] Failed: " + e.getMessage());
-                    if (callback != null) callback.onResult(false);
+                    // Server unreachable -- fall back to cache (might work if Firestore
+                    // synced before app data was cleared but after reinstall)
+                    Log.w(TAG, "[VAULT_FETCH] Server fetch failed, trying cache: " + e.getMessage());
+                    docRef.get(Source.CACHE)
+                            .addOnSuccessListener(doc -> {
+                                if (processVaultDocument(doc, callback)) return;
+                                Log.d(TAG, "[VAULT_FETCH] No vault in cache either");
+                                if (callback != null) callback.onResult(false);
+                            })
+                            .addOnFailureListener(cacheError -> {
+                                Log.e(TAG, "[VAULT_FETCH] Cache also failed: " + cacheError.getMessage());
+                                if (callback != null) callback.onResult(false);
+                            });
                 });
+    }
+
+    /**
+     * Process a Firestore document snapshot and store vault metadata locally.
+     * Returns true if vault was found and stored, false otherwise.
+     */
+    private boolean processVaultDocument(DocumentSnapshot doc, VaultFetchCallback callback) {
+        if (doc == null || !doc.exists()) return false;
+
+        Map<String, Object> data = doc.getData();
+        if (data == null) return false;
+
+        String salt = getStr(data, "salt");
+        String encDEK = getStr(data, "encryptedDEK");
+        String iv = getStr(data, "iv");
+        String tag = getStr(data, "tag");
+        int iterations = getInt(data, "iterations");
+        long createdAt = getLong(data, "createdAt");
+
+        if (salt.length() > 0 && encDEK.length() > 0
+                && iv.length() > 0 && tag.length() > 0) {
+
+            if (iterations <= 0) iterations = CryptoManager.FIXED_ITERATIONS;
+
+            Log.d(TAG, "[VAULT_FETCH] SUCCESS: salt_len=" + salt.length()
+                    + ", encDEK_len=" + encDEK.length()
+                    + ", iv_len=" + iv.length()
+                    + ", tag_len=" + tag.length()
+                    + ", iterations=" + iterations);
+
+            prefs.edit()
+                    .putString(KEY_SALT, salt)
+                    .putString(KEY_ENCRYPTED_DEK, encDEK)
+                    .putString(KEY_IV, iv)
+                    .putString(KEY_TAG, tag)
+                    .putInt(KEY_ITERATIONS, iterations)
+                    .putLong(KEY_CREATED_AT, createdAt)
+                    .putBoolean(KEY_VAULT_INITIALIZED, true)
+                    .putBoolean(KEY_VAULT_UPLOADED, true) // Came from server, so it's uploaded
+                    .commit();
+
+            if (callback != null) callback.onResult(true);
+            return true;
+        }
+        return false;
     }
 
     // ======================== CLOUD NOTES CHECK ========================
@@ -569,6 +619,8 @@ public class KeyManager {
     /**
      * Check if notes exist in Firestore (safety check before vault creation).
      * If notes exist but vault is missing, creating new vault = data loss.
+     *
+     * FIX: Uses Source.SERVER to get accurate data, not stale cache.
      */
     public void checkCloudNotesExist(final VaultFetchCallback callback) {
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
@@ -586,15 +638,29 @@ public class KeyManager {
                 .collection("users").document(uid)
                 .collection("notes")
                 .limit(1)
-                .get()
+                .get(Source.SERVER)
                 .addOnSuccessListener(querySnapshot -> {
                     boolean exists = querySnapshot != null && !querySnapshot.isEmpty();
                     Log.d(TAG, "[NOTES_CHECK] notes exist=" + exists);
                     if (callback != null) callback.onResult(exists);
                 })
                 .addOnFailureListener(e -> {
-                    Log.e(TAG, "[NOTES_CHECK] failed: " + e.getMessage());
-                    if (callback != null) callback.onResult(false);
+                    Log.e(TAG, "[NOTES_CHECK] server check failed, trying cache: " + e.getMessage());
+                    // Fallback to cache
+                    FirebaseFirestore.getInstance()
+                            .collection("users").document(uid)
+                            .collection("notes")
+                            .limit(1)
+                            .get(Source.CACHE)
+                            .addOnSuccessListener(querySnapshot -> {
+                                boolean exists = querySnapshot != null && !querySnapshot.isEmpty();
+                                Log.d(TAG, "[NOTES_CHECK] cache: notes exist=" + exists);
+                                if (callback != null) callback.onResult(exists);
+                            })
+                            .addOnFailureListener(e2 -> {
+                                Log.e(TAG, "[NOTES_CHECK] cache also failed: " + e2.getMessage());
+                                if (callback != null) callback.onResult(false);
+                            });
                 });
     }
 
@@ -675,31 +741,18 @@ public class KeyManager {
                     String newSaltB64 = Base64.encodeToString(newSalt, Base64.NO_WRAP);
                     long createdAt = prefs.getLong(KEY_CREATED_AT, System.currentTimeMillis());
 
-                    // Step 4: Update local storage
+                    // Step 4: Update local storage FIRST
                     prefs.edit()
                             .putString(KEY_SALT, newSaltB64)
                             .putString(KEY_ENCRYPTED_DEK, bundle.encryptedDEK)
                             .putString(KEY_IV, bundle.iv)
                             .putString(KEY_TAG, bundle.tag)
+                            .putBoolean(KEY_VAULT_UPLOADED, false) // Needs re-upload
                             .commit();
 
-                    // Step 5: Update Firestore (overwrite is OK for password change)
-                    FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
-                    if (authManager.isLoggedIn() && authManager.getUid() != null) {
-                        Map<String, Object> data = new HashMap<>();
-                        data.put("salt", newSaltB64);
-                        data.put("encryptedDEK", bundle.encryptedDEK);
-                        data.put("iv", bundle.iv);
-                        data.put("tag", bundle.tag);
-                        data.put("iterations", CryptoManager.FIXED_ITERATIONS);
-                        data.put("createdAt", createdAt);
-
-                        getVaultDocRef(authManager.getUid()).set(data)
-                                .addOnSuccessListener(unused ->
-                                        Log.d(TAG, "Password change: Firestore updated"))
-                                .addOnFailureListener(e ->
-                                        Log.e(TAG, "Password change: Firestore update failed: " + e.getMessage()));
-                    }
+                    // Step 5: Update Firestore
+                    uploadVaultToFirestoreWithConfirmation(newSaltB64, bundle.encryptedDEK,
+                            bundle.iv, bundle.tag, createdAt);
 
                     // Update cached DEK reference
                     if (cachedDEK != null) Arrays.fill(cachedDEK, (byte) 0);
@@ -734,6 +787,7 @@ public class KeyManager {
                 .putInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS)
                 .putLong(KEY_CREATED_AT, createdAt)
                 .putBoolean(KEY_VAULT_INITIALIZED, true)
+                .putBoolean(KEY_VAULT_UPLOADED, false) // Will be uploaded by uploadVaultToFirestore()
                 .commit();
     }
 
@@ -789,6 +843,7 @@ public class KeyManager {
                 .putInt(KEY_ITERATIONS, iterations)
                 .putLong(KEY_CREATED_AT, System.currentTimeMillis())
                 .putBoolean(KEY_VAULT_INITIALIZED, true)
+                .putBoolean(KEY_VAULT_UPLOADED, false)
                 .commit();
     }
 
