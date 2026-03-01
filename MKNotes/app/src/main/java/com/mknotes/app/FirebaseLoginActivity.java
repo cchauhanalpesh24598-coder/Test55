@@ -21,14 +21,18 @@ import com.mknotes.app.util.PrefsManager;
 
 /**
  * Firebase Email/Password login/register screen.
- * Separate from MasterPassword - this is for cloud sync authentication.
  *
- * After successful Firebase login, attempts to fetch vault metadata from Firestore.
- * - If vault exists: store locally, redirect to MasterPasswordActivity (unlock mode)
- * - If no vault: redirect to MasterPasswordActivity (create mode) or straight to MainActivity
+ * After successful Firebase login:
+ * 1. Fetch vault from Firestore (users/{uid}/crypto_metadata/vault)
+ * 2. If vault found -> MasterPasswordActivity (UNLOCK mode)
+ * 3. If no vault + notes exist -> MasterPasswordActivity (LEGACY RECOVERY)
+ * 4. If no vault + no notes -> MasterPasswordActivity (CREATE mode)
+ *
+ * REINSTALL PROOF: Vault metadata fetched from Firestore after login.
  */
 public class FirebaseLoginActivity extends AppCompatActivity {
 
+    private static final String TAG = "FirebaseLoginActivity";
     private static final int MODE_LOGIN = 0;
     private static final int MODE_REGISTER = 1;
 
@@ -68,7 +72,6 @@ public class FirebaseLoginActivity extends AppCompatActivity {
 
         btnAction.setOnClickListener(v -> handleAction());
 
-        // Show/Hide password toggle
         if (cbShowPassword != null) {
             cbShowPassword.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
@@ -135,7 +138,6 @@ public class FirebaseLoginActivity extends AppCompatActivity {
             public void onSuccess() {
                 runOnUiThread(() -> {
                     PrefsManager.getInstance(FirebaseLoginActivity.this).setCloudSyncEnabled(true);
-                    // After successful Firebase login, fetch vault metadata from Firestore
                     fetchVaultAndProceed();
                 });
             }
@@ -156,16 +158,14 @@ public class FirebaseLoginActivity extends AppCompatActivity {
         }
     }
 
-    private static final String TAG = "FirebaseLoginActivity";
-
     /**
-     * After Firebase login, attempt to fetch vault metadata from Firestore.
-     * If vault exists: user has an existing account with encryption set up.
-     *   -> Save locally, redirect to MasterPasswordActivity (UNLOCK mode)
-     * If vault NOT found but notes exist:
-     *   -> SAFETY: Show error, do NOT allow new vault creation (would make old notes undecryptable)
-     * If vault NOT found and NO notes:
-     *   -> Fresh user, redirect to MasterPasswordActivity (CREATE mode)
+     * After Firebase login, fetch vault metadata from Firestore.
+     *
+     * Path: users/{uid}/crypto_metadata/vault
+     *
+     * If found: redirect to UNLOCK.
+     * If not found + notes exist: redirect to LEGACY RECOVERY.
+     * If not found + no notes: redirect to CREATE.
      */
     private void fetchVaultAndProceed() {
         final KeyManager km = KeyManager.getInstance(this);
@@ -177,16 +177,13 @@ public class FirebaseLoginActivity extends AppCompatActivity {
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (vaultFound) {
-                            Log.d(TAG, "[VAULT_EXISTS] Vault found in Firestore, going to UNLOCK mode");
-                            // Vault found and saved locally -- redirect to master password UNLOCK
+                            Log.d(TAG, "[VAULT_FETCH] Vault found, going to UNLOCK");
                             Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
                             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
                             startActivity(intent);
                             finish();
                         } else {
-                            Log.d(TAG, "[VAULT_MISSING] No vault in Firestore, checking if notes exist...");
-                            // SAFETY CHECK: Before allowing CREATE mode, check if notes exist
-                            // If notes exist but vault is missing, creating new vault = data loss
+                            Log.d(TAG, "[VAULT_FETCH] No vault, checking for notes...");
                             checkNotesBeforeCreate(km);
                         }
                     }
@@ -196,9 +193,9 @@ public class FirebaseLoginActivity extends AppCompatActivity {
     }
 
     /**
-     * Check if notes exist in Firestore BEFORE allowing vault creation.
-     * If notes exist but vault metadata is missing, redirect to MasterPasswordActivity
-     * which will handle legacy recovery mode (instead of blocking the user).
+     * Check if notes exist in Firestore before allowing vault creation.
+     * If notes exist but vault is missing -> legacy recovery.
+     * If no notes -> fresh user, go to CREATE.
      */
     private void checkNotesBeforeCreate(final KeyManager km) {
         km.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
@@ -206,18 +203,16 @@ public class FirebaseLoginActivity extends AppCompatActivity {
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (notesExist) {
-                            // Notes exist but vault metadata is missing
-                            // Redirect to MasterPasswordActivity which will offer legacy recovery
-                            Log.d(TAG, "[LEGACY_DETECTED] Notes exist in Firestore but vault metadata is MISSING. "
-                                    + "Redirecting to MasterPasswordActivity for legacy recovery.");
+                            // Notes exist but vault missing -> legacy recovery
+                            Log.d(TAG, "[LEGACY_DETECTED] Notes exist, vault missing. Legacy recovery.");
                             Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
                             intent.putExtra("legacy_recovery", true);
                             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
                             startActivity(intent);
                             finish();
                         } else {
-                            // No notes and no vault -- truly fresh user, go to CREATE mode
-                            Log.d(TAG, "[FRESH_USER] No notes and no vault, proceeding to MasterPasswordActivity CREATE mode");
+                            // Fresh user
+                            Log.d(TAG, "[FRESH_USER] No vault, no notes. CREATE mode.");
                             Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
                             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
                             startActivity(intent);
