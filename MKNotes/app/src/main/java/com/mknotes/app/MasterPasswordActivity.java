@@ -17,8 +17,6 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.google.firebase.firestore.FirebaseFirestore;
-
 import com.mknotes.app.cloud.FirebaseAuthManager;
 import com.mknotes.app.crypto.CryptoManager;
 import com.mknotes.app.crypto.KeyManager;
@@ -29,14 +27,19 @@ import com.mknotes.app.util.PrefsManager;
 import com.mknotes.app.util.SessionManager;
 
 /**
- * Gatekeeper activity that requires master password before allowing app access.
- * Two modes: CREATE (first launch) and UNLOCK (subsequent launches after session expiry).
+ * Gatekeeper activity: master password CREATE or UNLOCK.
  *
- * Now supports:
- * - New 2-layer DEK vault system via KeyManager
- * - Migration from old single-layer system via MigrationManager
- * - Vault fetch from Firestore on reinstall/new device
- * - HMAC-based password verification (no encrypted-plaintext oracle)
+ * Flow:
+ * 1. If vault initialized + unlocked + session valid -> skip to main
+ * 2. If vault initialized locally -> UNLOCK mode
+ * 3. If logged in -> fetch vault from Firestore
+ *    a. Vault found -> cache locally, UNLOCK mode
+ *    b. No vault + no notes -> CREATE mode (fresh user)
+ *    c. No vault + notes exist -> LEGACY RECOVERY mode
+ * 4. If not logged in -> CREATE mode (offline use)
+ *
+ * REINSTALL PROOF: Vault metadata stored in Firestore at
+ * users/{uid}/crypto_metadata/vault. On reinstall, fetched and cached locally.
  */
 public class MasterPasswordActivity extends Activity {
 
@@ -64,7 +67,7 @@ public class MasterPasswordActivity extends Activity {
         sessionManager = SessionManager.getInstance(this);
         keyManager = KeyManager.getInstance(this);
 
-        // If vault is initialized, unlocked, and session is valid -- skip to main
+        // If vault is initialized, unlocked, and session valid -> skip
         if (keyManager.isVaultInitialized() && keyManager.isVaultUnlocked()
                 && sessionManager.isSessionValid()) {
             sessionManager.updateSessionTimestamp();
@@ -88,12 +91,16 @@ public class MasterPasswordActivity extends Activity {
         boolean isLegacyRecovery = getIntent().getBooleanExtra("legacy_recovery", false);
 
         if (isLegacyRecovery) {
-            Log.d(TAG, "[LEGACY_RECOVERY] Intent flag detected, setting up legacy recovery mode");
+            Log.d(TAG, "[LEGACY_RECOVERY] Intent flag detected");
             setupLegacyRecoveryMode();
+        } else if (keyManager.isVaultInitialized()) {
+            // Vault exists locally (either from previous use or fetched from Firestore)
+            setupUnlockMode();
         } else if (sessionManager.isPasswordSet()) {
+            // Old system password exists -- needs migration
             setupUnlockMode();
         } else {
-            // Check if vault exists in Firestore (reinstall scenario)
+            // Check Firestore for vault (reinstall scenario)
             checkFirestoreVault();
         }
     }
@@ -116,7 +123,6 @@ public class MasterPasswordActivity extends Activity {
         btnAction = (Button) findViewById(R.id.btn_action);
         cbShowPassword = (CheckBox) findViewById(R.id.cb_show_password);
 
-        // Show/Hide password toggle
         if (cbShowPassword != null) {
             cbShowPassword.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
@@ -131,7 +137,6 @@ public class MasterPasswordActivity extends Activity {
                             editConfirmPassword.setTransformationMethod(PasswordTransformationMethod.getInstance());
                         }
                     }
-                    // Move cursor to end
                     editPassword.setSelection(editPassword.getText().length());
                     if (editConfirmPassword.getVisibility() == View.VISIBLE) {
                         editConfirmPassword.setSelection(editConfirmPassword.getText().length());
@@ -141,23 +146,20 @@ public class MasterPasswordActivity extends Activity {
         }
     }
 
+    // ======================== FIRESTORE VAULT CHECK ========================
+
     /**
-     * Check if vault exists in Firestore (for reinstall/new device scenario).
-     * If found, switch to unlock mode. If not, check for orphan notes safety.
-     * SAFETY: Always tries Firestore before allowing create mode.
-     * If notes exist in cloud but vault metadata is missing, BLOCK vault creation.
+     * Check Firestore for vault metadata (reinstall scenario).
+     * If found: UNLOCK mode. If not: check for orphan notes.
      */
     private void checkFirestoreVault() {
-        // SAFETY: If vault already exists locally (e.g. partial fetch), go to unlock
         if (keyManager.isVaultInitialized()) {
-            Log.d(TAG, "[VAULT_CHECK] Vault already initialized locally, going to unlock mode");
             setupUnlockMode();
             return;
         }
 
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
         if (authManager.isLoggedIn()) {
-            // Show loading state
             btnAction.setEnabled(false);
             textSubtitle.setText("Fetching vault from cloud...");
 
@@ -165,13 +167,12 @@ public class MasterPasswordActivity extends Activity {
                 public void onResult(final boolean vaultFound) {
                     runOnUiThread(new Runnable() {
                         public void run() {
+                            btnAction.setEnabled(true);
                             if (vaultFound) {
-                                Log.d(TAG, "[VAULT_EXISTS] Vault found in Firestore, switching to UNLOCK mode");
-                                btnAction.setEnabled(true);
+                                Log.d(TAG, "[VAULT_FETCH] Vault found, switching to UNLOCK");
                                 setupUnlockMode();
                             } else {
-                                Log.d(TAG, "[VAULT_MISSING] No vault in Firestore, checking for orphan notes...");
-                                // SAFETY CHECK: Before allowing create, check if notes exist
+                                Log.d(TAG, "[VAULT_FETCH] No vault, checking for orphan notes...");
                                 checkCloudNotesBeforeCreate();
                             }
                         }
@@ -179,32 +180,28 @@ public class MasterPasswordActivity extends Activity {
                 }
             });
         } else {
-            // Not logged in -- show create mode (offline use)
-            Log.d(TAG, "[VAULT_CHECK] Not logged in, allowing create mode");
+            Log.d(TAG, "Not logged in, allowing CREATE mode");
             setupCreateMode();
         }
     }
 
     /**
-     * SAFETY: Check if notes exist in Firestore BEFORE allowing vault creation.
-     * If notes exist but vault metadata is missing, creating a new vault
-     * would generate a new salt/DEK, making all existing notes permanently undecryptable.
+     * SAFETY: Check if notes exist before allowing vault creation.
+     * If notes exist but vault is missing -> show error (crypto_metadata missing).
+     * If no notes -> allow fresh vault creation.
      */
     private void checkCloudNotesBeforeCreate() {
         keyManager.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
             public void onResult(final boolean notesExist) {
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        btnAction.setEnabled(true);
                         if (notesExist) {
                             // Notes exist but vault metadata is missing
-                            // Instead of blocking, offer legacy recovery mode
-                            Log.d(TAG, "[LEGACY_DETECTED] Notes exist in Firestore but vault metadata is MISSING. "
-                                    + "Offering legacy recovery mode.");
+                            Log.d(TAG, "[LEGACY_DETECTED] Notes exist but vault missing");
                             setupLegacyRecoveryMode();
                         } else {
-                            // No notes, no vault -- truly fresh user, allow create
-                            Log.d(TAG, "[FRESH_USER] No notes and no vault in Firestore, allowing create mode");
+                            // No notes, no vault -- fresh user
+                            Log.d(TAG, "[FRESH_USER] No notes, no vault, allowing CREATE");
                             setupCreateMode();
                         }
                     }
@@ -213,15 +210,44 @@ public class MasterPasswordActivity extends Activity {
         });
     }
 
-    /**
-     * Legacy Recovery Mode: Notes exist in Firestore but vault metadata is missing.
-     * Instead of blocking the user, allow them to enter their old master password
-     * to attempt migration from legacy direct-key encryption to new DEK system.
-     */
+    // ======================== MODE SETUP ========================
+
+    private void setupCreateMode() {
+        currentMode = MODE_CREATE;
+        toolbarTitle.setText(R.string.master_password_title_create);
+        textSubtitle.setText(R.string.master_password_subtitle_create);
+        editConfirmPassword.setVisibility(View.VISIBLE);
+        textStrengthHint.setVisibility(View.VISIBLE);
+        btnAction.setText(R.string.master_password_btn_create);
+        textError.setVisibility(View.GONE);
+        btnAction.setEnabled(true);
+
+        btnAction.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                handleCreate();
+            }
+        });
+    }
+
+    private void setupUnlockMode() {
+        currentMode = MODE_UNLOCK;
+        toolbarTitle.setText(R.string.master_password_title_unlock);
+        textSubtitle.setText(R.string.master_password_subtitle_unlock);
+        editConfirmPassword.setVisibility(View.GONE);
+        textStrengthHint.setVisibility(View.GONE);
+        btnAction.setText(R.string.master_password_btn_unlock);
+        textError.setVisibility(View.GONE);
+        btnAction.setEnabled(true);
+
+        btnAction.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                handleUnlock();
+            }
+        });
+    }
+
     private void setupLegacyRecoveryMode() {
         currentMode = MODE_LEGACY_RECOVERY;
-        Log.d(TAG, "[LEGACY_RECOVERY] Setting up legacy recovery mode");
-
         toolbarTitle.setText(R.string.legacy_recovery_title);
         textSubtitle.setText(R.string.legacy_recovery_subtitle);
         editPassword.setVisibility(View.VISIBLE);
@@ -241,118 +267,7 @@ public class MasterPasswordActivity extends Activity {
         });
     }
 
-    /**
-     * Handle legacy recovery: verify master password against a sample cloud note,
-     * then migrate all notes to new DEK encryption system.
-     */
-    private void handleLegacyRecovery() {
-        final String password = editPassword.getText().toString();
-
-        if (password.length() == 0) {
-            showError(getString(R.string.master_password_error_empty));
-            return;
-        }
-
-        btnAction.setEnabled(false);
-        textError.setVisibility(View.GONE);
-        textSubtitle.setText(R.string.legacy_recovery_verifying);
-
-        Log.d(TAG, "[LEGACY_RECOVERY] Verifying legacy master password...");
-
-        // Step 1: Verify the password can decrypt a sample note
-        MigrationManager.verifyLegacyPassword(this, password,
-                new MigrationManager.LegacyMigrationCallback() {
-                    public void onSuccess() {
-                        runOnUiThread(new Runnable() {
-                            public void run() {
-                                Log.d(TAG, "[LEGACY_RECOVERY] Password verified, starting migration...");
-                                textSubtitle.setText(R.string.legacy_recovery_migrating);
-                                performLegacyMigration(password);
-                            }
-                        });
-                    }
-
-                    public void onFailure(final String error) {
-                        runOnUiThread(new Runnable() {
-                            public void run() {
-                                Log.e(TAG, "[LEGACY_RECOVERY] Password verification failed: " + error);
-                                btnAction.setEnabled(true);
-                                textSubtitle.setText(R.string.legacy_recovery_subtitle);
-                                showError(getString(R.string.legacy_recovery_wrong_password));
-                                editPassword.setText("");
-                            }
-                        });
-                    }
-                });
-    }
-
-    /**
-     * Perform the actual legacy migration after password verification.
-     */
-    private void performLegacyMigration(final String password) {
-        MigrationManager.migrateLegacyCloudNotes(this, password,
-                new MigrationManager.LegacyMigrationCallback() {
-                    public void onSuccess() {
-                        runOnUiThread(new Runnable() {
-                            public void run() {
-                                Log.d(TAG, "[MIGRATION_SUCCESS] Legacy cloud migration completed");
-                                sessionManager.setPasswordSetFlag(true);
-                                sessionManager.updateSessionTimestamp();
-                                sessionManager.setEncryptionMigrated(true);
-                                // Clear old credentials if any
-                                sessionManager.clearOldCredentials();
-
-                                Toast.makeText(MasterPasswordActivity.this,
-                                        R.string.legacy_recovery_success, Toast.LENGTH_LONG).show();
-                                launchMain();
-                            }
-                        });
-                    }
-
-                    public void onFailure(final String error) {
-                        runOnUiThread(new Runnable() {
-                            public void run() {
-                                Log.e(TAG, "[MIGRATION_FAILED] Legacy migration failed: " + error);
-                                btnAction.setEnabled(true);
-                                textSubtitle.setText(R.string.legacy_recovery_subtitle);
-                                showError(getString(R.string.legacy_recovery_migration_failed) + "\n" + error);
-                            }
-                        });
-                    }
-                });
-    }
-
-    private void setupCreateMode() {
-        currentMode = MODE_CREATE;
-        toolbarTitle.setText(R.string.master_password_title_create);
-        textSubtitle.setText(R.string.master_password_subtitle_create);
-        editConfirmPassword.setVisibility(View.VISIBLE);
-        textStrengthHint.setVisibility(View.VISIBLE);
-        btnAction.setText(R.string.master_password_btn_create);
-        textError.setVisibility(View.GONE);
-
-        btnAction.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                handleCreate();
-            }
-        });
-    }
-
-    private void setupUnlockMode() {
-        currentMode = MODE_UNLOCK;
-        toolbarTitle.setText(R.string.master_password_title_unlock);
-        textSubtitle.setText(R.string.master_password_subtitle_unlock);
-        editConfirmPassword.setVisibility(View.GONE);
-        textStrengthHint.setVisibility(View.GONE);
-        btnAction.setText(R.string.master_password_btn_unlock);
-        textError.setVisibility(View.GONE);
-
-        btnAction.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                handleUnlock();
-            }
-        });
-    }
+    // ======================== HANDLE CREATE ========================
 
     private void handleCreate() {
         String password = editPassword.getText().toString();
@@ -362,96 +277,85 @@ public class MasterPasswordActivity extends Activity {
             showError(getString(R.string.master_password_error_short));
             return;
         }
-
         if (!password.equals(confirm)) {
             showError(getString(R.string.master_password_error_mismatch));
             return;
         }
 
-        // SAFETY CHECK: If vault already exists locally, do NOT create new one
+        // SAFETY: If vault already exists, switch to unlock
         if (keyManager.isVaultInitialized()) {
-            Log.w(TAG, "[SAFETY_BLOCK] handleCreate() blocked: vault already exists locally. Switching to unlock mode.");
+            Log.w(TAG, "[SAFETY] Vault already exists, switching to UNLOCK");
             setupUnlockMode();
             return;
         }
 
         btnAction.setEnabled(false);
         textSubtitle.setText("Creating vault...");
+        textError.setVisibility(View.GONE);
 
-        // SAFETY CHECK: Double-check Firestore before creating vault
-        // This prevents race conditions where vault was uploaded between fetch and create
+        // Double-check Firestore before creating (prevent race conditions)
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
         if (authManager.isLoggedIn()) {
-            Log.d(TAG, "[VAULT_CREATE] Double-checking Firestore before vault creation...");
             final String pwd = password;
             keyManager.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
                 public void onResult(final boolean vaultFound) {
                     runOnUiThread(new Runnable() {
                         public void run() {
                             if (vaultFound) {
-                                // Vault appeared in Firestore -- switch to unlock, do NOT create
-                                Log.w(TAG, "[SAFETY_BLOCK] Vault found in Firestore during create! Switching to unlock mode.");
+                                Log.w(TAG, "[SAFETY] Vault appeared in Firestore, switching to UNLOCK");
                                 btnAction.setEnabled(true);
-                                textSubtitle.setText(R.string.master_password_subtitle_unlock);
                                 setupUnlockMode();
                             } else {
-                                // Also check if notes exist (orphan notes safety)
-                                keyManager.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
-                                    public void onResult(final boolean notesExist) {
-                                        runOnUiThread(new Runnable() {
-                                            public void run() {
-                                                if (notesExist) {
-                                                    // Notes exist without vault metadata
-                                                    // Switch to legacy recovery instead of blocking
-                                                    Log.d(TAG, "[LEGACY_DETECTED] Notes exist in cloud but no vault metadata. "
-                                                            + "Switching to legacy recovery mode.");
-                                                    setupLegacyRecoveryMode();
-                                                } else {
-                                                    // All clear -- proceed with vault creation
-                                                    performVaultCreation(pwd);
-                                                }
-                                            }
-                                        });
-                                    }
-                                });
+                                performVaultCreation(pwd);
                             }
                         }
                     });
                 }
             });
         } else {
-            // Not logged in -- safe to create locally
-            Log.d(TAG, "[VAULT_CREATE] Not logged in, creating vault locally");
             performVaultCreation(password);
         }
     }
 
-    /**
-     * Actually create the vault after all safety checks have passed.
-     */
-    private void performVaultCreation(String password) {
-        Log.d(TAG, "[VAULT_CREATE] All safety checks passed, initializing vault...");
-        boolean success = keyManager.initializeVault(password);
-        if (success) {
-            Log.d(TAG, "[VAULT_CREATE] Vault initialized successfully");
-            sessionManager.setPasswordSetFlag(true);
-            sessionManager.updateSessionTimestamp();
-            sessionManager.setEncryptionMigrated(true);
+    private void performVaultCreation(final String password) {
+        Log.d(TAG, "[VAULT_CREATED] Starting vault creation...");
 
-            // Migrate existing plaintext notes if any
-            migrateExistingPlaintextNotes();
+        keyManager.initializeVault(password, new KeyManager.VaultCallback() {
+            public void onSuccess() {
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        Log.d(TAG, "[VAULT_CREATED] SUCCESS");
+                        sessionManager.setPasswordSetFlag(true);
+                        sessionManager.updateSessionTimestamp();
+                        sessionManager.setEncryptionMigrated(true);
 
-            Toast.makeText(this, R.string.master_password_set_success, Toast.LENGTH_SHORT).show();
-            launchMain();
-        } else {
-            Log.e(TAG, "[VAULT_CREATE] initializeVault() returned false");
-            btnAction.setEnabled(true);
-            showError(getString(R.string.master_password_error_generic));
-        }
+                        // Migrate existing plaintext notes if any
+                        migrateExistingPlaintextNotes();
+
+                        Toast.makeText(MasterPasswordActivity.this,
+                                R.string.master_password_set_success, Toast.LENGTH_SHORT).show();
+                        launchMain();
+                    }
+                });
+            }
+
+            public void onError(final String error) {
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        Log.e(TAG, "[VAULT_CREATED] FAILED: " + error);
+                        btnAction.setEnabled(true);
+                        textSubtitle.setText(R.string.master_password_subtitle_create);
+                        showError(getString(R.string.master_password_error_generic));
+                    }
+                });
+            }
+        });
     }
 
+    // ======================== HANDLE UNLOCK ========================
+
     private void handleUnlock() {
-        String password = editPassword.getText().toString();
+        final String password = editPassword.getText().toString();
 
         if (password.length() == 0) {
             showError(getString(R.string.master_password_error_empty));
@@ -459,58 +363,54 @@ public class MasterPasswordActivity extends Activity {
         }
 
         btnAction.setEnabled(false);
+        textError.setVisibility(View.GONE);
 
-        // Check if this is new 2-layer system or old system needing migration
-        if (keyManager.isVaultInitialized() && keyManager.getVaultVersion() >= KeyManager.CURRENT_VAULT_VERSION) {
-            // New system: unlock via KeyManager (HMAC verification)
-            Log.d(TAG, "Attempting unlock with new 2-layer system");
-            boolean valid = keyManager.unlockVault(password);
-            if (valid) {
-                sessionManager.setPasswordSetFlag(true);
-                sessionManager.updateSessionTimestamp();
-                sessionManager.setEncryptionMigrated(true);
-                launchMain();
-            } else {
-                btnAction.setEnabled(true);
-                showError(getString(R.string.master_password_error_wrong));
-                editPassword.setText("");
-            }
+        // New v2 vault system
+        if (keyManager.isVaultInitialized()) {
+            Log.d(TAG, "Attempting unlock with v2 vault system");
+
+            // Run unlock on background thread (PBKDF2 is CPU-intensive)
+            new Thread(new Runnable() {
+                public void run() {
+                    final boolean valid = keyManager.unlockVault(password);
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            if (valid) {
+                                Log.d(TAG, "[VAULT_UNLOCK_SUCCESS]");
+                                sessionManager.setPasswordSetFlag(true);
+                                sessionManager.updateSessionTimestamp();
+                                sessionManager.setEncryptionMigrated(true);
+                                launchMain();
+                            } else {
+                                Log.w(TAG, "[VAULT_UNLOCK_FAILED] Wrong password");
+                                btnAction.setEnabled(true);
+                                showError(getString(R.string.master_password_error_wrong));
+                                editPassword.setText("");
+                            }
+                        }
+                    });
+                }
+            }).start();
+
         } else if (sessionManager.hasOldSystemCredentials()) {
-            // Old system: verify with old method, then migrate to new system
+            // Old system: verify + migrate
             Log.d(TAG, "Attempting unlock with old system + migration");
             handleOldSystemUnlock(password);
-        } else if (keyManager.isVaultInitialized()) {
-            // Vault from Firestore (reinstall) -- try unlock
-            Log.d(TAG, "Attempting unlock with Firestore vault (reinstall scenario)");
-            boolean valid = keyManager.unlockVault(password);
-            if (valid) {
-                sessionManager.setPasswordSetFlag(true);
-                sessionManager.updateSessionTimestamp();
-                sessionManager.setEncryptionMigrated(true);
-                launchMain();
-            } else {
-                btnAction.setEnabled(true);
-                showError(getString(R.string.master_password_error_wrong));
-                editPassword.setText("");
-            }
+
         } else if (currentMode == MODE_LEGACY_RECOVERY) {
-            // Legacy recovery mode -- handle through legacy recovery path
-            Log.d(TAG, "handleUnlock called in LEGACY_RECOVERY mode, redirecting to handleLegacyRecovery");
             handleLegacyRecovery();
+
         } else {
             btnAction.setEnabled(true);
             showError(getString(R.string.master_password_error_generic));
         }
     }
 
-    /**
-     * Handle unlock with old single-layer system, then migrate to new DEK system.
-     */
+    // ======================== OLD SYSTEM MIGRATION ========================
+
     private void handleOldSystemUnlock(String password) {
-        // Verify with old CryptoUtils system
         String saltHex = sessionManager.getOldSaltHex();
         String verifyToken = sessionManager.getOldVerifyToken();
-        int oldIterations = sessionManager.getOldIterations();
 
         if (saltHex == null || verifyToken == null) {
             btnAction.setEnabled(true);
@@ -537,39 +437,101 @@ public class MasterPasswordActivity extends Activity {
             return;
         }
 
-        // Old password verified -- now migrate to new 2-layer DEK system
+        // Old password verified -- migrate to new system
         sessionManager.updateSessionTimestamp();
+        int oldIterations = sessionManager.getOldIterations();
 
         boolean migrated = MigrationManager.migrate(this, password, oldSalt, oldIterations);
         if (migrated) {
-            // Migration successful -- clear old credentials
             sessionManager.clearOldCredentials();
             sessionManager.setEncryptionMigrated(true);
             Toast.makeText(this, R.string.master_password_set_success, Toast.LENGTH_SHORT).show();
             launchMain();
         } else {
-            // Migration failed -- old data preserved via backup restore
-            // Still allow access with old system for now
             btnAction.setEnabled(true);
             showError("Migration failed. Please try again.");
         }
     }
 
-    /**
-     * Migrate existing plaintext notes to encrypted format (for first-time setup).
-     * Uses new DEK from KeyManager.
-     */
+    // ======================== LEGACY RECOVERY ========================
+
+    private void handleLegacyRecovery() {
+        final String password = editPassword.getText().toString();
+
+        if (password.length() == 0) {
+            showError(getString(R.string.master_password_error_empty));
+            return;
+        }
+
+        btnAction.setEnabled(false);
+        textError.setVisibility(View.GONE);
+        textSubtitle.setText(R.string.legacy_recovery_verifying);
+
+        MigrationManager.verifyLegacyPassword(this, password,
+                new MigrationManager.LegacyMigrationCallback() {
+                    public void onSuccess() {
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                textSubtitle.setText(R.string.legacy_recovery_migrating);
+                                performLegacyMigration(password);
+                            }
+                        });
+                    }
+
+                    public void onFailure(final String error) {
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                btnAction.setEnabled(true);
+                                textSubtitle.setText(R.string.legacy_recovery_subtitle);
+                                showError(getString(R.string.legacy_recovery_wrong_password));
+                                editPassword.setText("");
+                            }
+                        });
+                    }
+                });
+    }
+
+    private void performLegacyMigration(final String password) {
+        MigrationManager.migrateLegacyCloudNotes(this, password,
+                new MigrationManager.LegacyMigrationCallback() {
+                    public void onSuccess() {
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                sessionManager.setPasswordSetFlag(true);
+                                sessionManager.updateSessionTimestamp();
+                                sessionManager.setEncryptionMigrated(true);
+                                sessionManager.clearOldCredentials();
+
+                                Toast.makeText(MasterPasswordActivity.this,
+                                        R.string.legacy_recovery_success, Toast.LENGTH_LONG).show();
+                                launchMain();
+                            }
+                        });
+                    }
+
+                    public void onFailure(final String error) {
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                btnAction.setEnabled(true);
+                                textSubtitle.setText(R.string.legacy_recovery_subtitle);
+                                showError(getString(R.string.legacy_recovery_migration_failed) + "\n" + error);
+                            }
+                        });
+                    }
+                });
+    }
+
+    // ======================== UTILITY ========================
+
     private void migrateExistingPlaintextNotes() {
         try {
             byte[] dek = keyManager.getDEK();
-            if (dek == null) {
-                return;
-            }
+            if (dek == null) return;
             NotesRepository repo = NotesRepository.getInstance(this);
             repo.migrateToEncrypted(dek);
             CryptoManager.zeroFill(dek);
         } catch (Exception e) {
-            // Migration failed -- will retry on next unlock
+            Log.e(TAG, "Plaintext migration failed: " + e.getMessage());
         }
     }
 
