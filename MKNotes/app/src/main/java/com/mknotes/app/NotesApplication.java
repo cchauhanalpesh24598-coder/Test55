@@ -12,6 +12,7 @@ import android.os.StrictMode;
 import android.util.Log;
 
 import com.google.firebase.FirebaseApp;
+import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.appcheck.FirebaseAppCheck;
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory;
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory;
@@ -20,19 +21,6 @@ import com.mknotes.app.crypto.KeyManager;
 import com.mknotes.app.db.NotesRepository;
 import com.mknotes.app.util.SessionManager;
 
-/**
- * Application class with Firebase App Check, auto-lock timer,
- * and ProcessLifecycleOwner-style foreground/background tracking.
- *
- * Firebase App Check:
- * - Debug builds: DebugAppCheckProviderFactory
- * - Release builds: PlayIntegrityAppCheckProviderFactory
- *
- * Auto-lock:
- * - When app goes to background, a 5-minute timer starts
- * - After timeout: KeyManager.lockVault() zeros DEK byte[]
- * - On foreground return after lock: user redirected to MasterPasswordActivity
- */
 public class NotesApplication extends Application {
 
     private static final String TAG = "NotesApplication";
@@ -40,35 +28,43 @@ public class NotesApplication extends Application {
     public static final String CHANNEL_ID_REMINDER = "notes_reminder_channel";
     public static final String CHANNEL_ID_GENERAL = "notes_general_channel";
 
-    /** Auto-lock timer handler */
+    private static boolean sFirebaseAvailable = false;
+
     private Handler autoLockHandler;
     private Runnable autoLockRunnable;
 
     public void onCreate() {
         super.onCreate();
 
-        // Allow file:// URIs to be shared with external apps
         StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
         StrictMode.setVmPolicy(builder.build());
 
         createNotificationChannels();
 
-        // Firebase initializes automatically via google-services.json plugin
-        // Setup Firebase App Check
         initFirebaseAppCheck();
 
-        // Auto-delete trash notes older than 30 days on app startup
+        // ✅ FIX: Firebase auth state listener
+        // Jab bhi user login kare, vault Firestore mein upload ensure karo
+        try {
+            FirebaseAuth.getInstance().addAuthStateListener(firebaseAuth -> {
+                if (firebaseAuth.getCurrentUser() != null) {
+                    Log.d(TAG, "[AUTH_STATE] User logged in, ensuring vault uploaded...");
+                    KeyManager.getInstance(NotesApplication.this).ensureVaultUploaded();
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "Auth state listener setup failed: " + e.getMessage());
+        }
+
         try {
             NotesRepository.getInstance(this).cleanupOldTrash();
         } catch (Exception e) {
-            // Fail silently - don't block app startup
+            // Fail silently
         }
 
-        // Setup auto-lock handler
         autoLockHandler = new Handler(Looper.getMainLooper());
         autoLockRunnable = new Runnable() {
             public void run() {
-                // Only lock if meditation is not playing
                 SessionManager sm = SessionManager.getInstance(NotesApplication.this);
                 if (!sm.isMeditationPlaying()) {
                     KeyManager.getInstance(NotesApplication.this).lockVault();
@@ -78,13 +74,11 @@ public class NotesApplication extends Application {
             }
         };
 
-        // Register ActivityLifecycleCallbacks for session timeout tracking
         registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
             private int activityCount = 0;
 
             public void onActivityStarted(Activity activity) {
                 if (activityCount == 0) {
-                    // App came to foreground - cancel pending auto-lock
                     cancelAutoLock();
                     SessionManager.getInstance(activity).onAppForegrounded();
                 }
@@ -94,7 +88,6 @@ public class NotesApplication extends Application {
             public void onActivityStopped(Activity activity) {
                 activityCount--;
                 if (activityCount == 0) {
-                    // App went to background - schedule auto-lock
                     SessionManager.getInstance(activity).onAppBackgrounded();
                     scheduleAutoLock();
                 }
@@ -109,13 +102,16 @@ public class NotesApplication extends Application {
     }
 
     /**
-     * Initialize Firebase App Check.
-     * Debug builds: DebugAppCheckProviderFactory (for emulators/test devices)
-     * Release builds: PlayIntegrityAppCheckProviderFactory (Google Play Integrity API)
+     * ✅ FIX: Ye method pehle missing thi - crash ka ek reason yahi tha
      */
+    public static boolean isFirebaseAvailable() {
+        return sFirebaseAvailable;
+    }
+
     private void initFirebaseAppCheck() {
         try {
             FirebaseApp.initializeApp(this);
+            sFirebaseAvailable = true; // ✅ Firebase available mark karo
             FirebaseAppCheck firebaseAppCheck = FirebaseAppCheck.getInstance();
             if (BuildConfig.DEBUG) {
                 firebaseAppCheck.installAppCheckProviderFactory(
@@ -127,23 +123,17 @@ public class NotesApplication extends Application {
                 Log.d(TAG, "Firebase App Check: Play Integrity provider installed");
             }
         } catch (Exception e) {
-            Log.e(TAG, "Firebase App Check init failed: " + e.getMessage());
-            // App Check failure should not crash the app
+            sFirebaseAvailable = false;
+            Log.e(TAG, "Firebase init failed: " + e.getMessage());
         }
     }
 
-    /**
-     * Schedule auto-lock after SESSION_TIMEOUT_MS (5 minutes).
-     */
     private void scheduleAutoLock() {
         if (autoLockHandler != null && autoLockRunnable != null) {
             autoLockHandler.postDelayed(autoLockRunnable, SessionManager.SESSION_TIMEOUT_MS);
         }
     }
 
-    /**
-     * Cancel pending auto-lock if user returns within timeout.
-     */
     private void cancelAutoLock() {
         if (autoLockHandler != null && autoLockRunnable != null) {
             autoLockHandler.removeCallbacks(autoLockRunnable);
