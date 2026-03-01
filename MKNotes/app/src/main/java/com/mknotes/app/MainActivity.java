@@ -29,6 +29,7 @@ import android.widget.Toast;
 import com.mknotes.app.cloud.CloudSyncManager;
 import com.mknotes.app.cloud.FirebaseAuthManager;
 import com.mknotes.app.adapter.NoteAdapter;
+import com.mknotes.app.crypto.KeyManager;
 import com.mknotes.app.db.NotesRepository;
 import com.mknotes.app.model.Category;
 import com.mknotes.app.model.Note;
@@ -111,6 +112,11 @@ public class MainActivity extends Activity {
         if (session.isPasswordSet()) {
             session.updateSessionTimestamp();
         }
+
+        // CRITICAL FIX: Ensure vault metadata is uploaded to Firestore.
+        // If initial upload failed, this retries on every app resume.
+        // Without this, reinstall on new device = permanent data loss.
+        KeyManager.getInstance(this).ensureVaultUploaded();
 
         loadNotes();
         loadCategoryTabs();
