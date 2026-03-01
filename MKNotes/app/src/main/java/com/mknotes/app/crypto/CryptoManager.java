@@ -1,46 +1,55 @@
 package com.mknotes.app.crypto;
 
+import android.util.Base64;
+import android.util.Log;
+
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
 import javax.crypto.Cipher;
-import javax.crypto.Mac;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Core 2-layer encryption engine for PRO-LEVEL security.
+ * Core 2-layer encryption engine -- FRESH CLEAN production-ready system.
  *
  * Architecture:
- * - PBKDF2WithHmacSHA256 with DYNAMIC iterations (read from metadata, never hardcoded)
- * - AES-256-GCM with 12-byte random IV, 128-bit auth tag
- * - HMAC-SHA256 based password verification (no encrypted-plaintext oracle)
- * - DEK/KEK separation: master password derives KEK, KEK wraps DEK, DEK encrypts notes
+ * - PBKDF2WithHmacSHA256 with FIXED 120,000 iterations
+ * - 16-byte random salt for key derivation
+ * - 256-bit Master Key (KEK) derived from password
+ * - 256-bit random Data Encryption Key (DEK)
+ * - DEK wrapped with Master Key using AES-256-GCM (12-byte IV, 128-bit tag)
+ * - Notes encrypted with DEK using AES-256-GCM (random IV per note)
  *
- * DEFAULT_ITERATIONS (150,000) is used ONLY when creating a brand-new vault.
- * All subsequent derivations read iterations from stored metadata.
+ * Storage format:
+ * - Firestore vault: salt, encryptedDEK, iv, tag -- all Base64 encoded
+ * - Note encryption: "ivHex:ciphertextHex" (hex for local SQLite compat)
  *
  * Memory safety:
  * - Key material is byte[], never String
  * - zeroFill() overwrites with 0x00
- * - No unnecessary Base64 encoding in memory
+ *
+ * REINSTALL PROOF: Salt, iterations, encryptedDEK, IV, tag stored in Firestore.
+ * On reinstall, fetch from Firestore, derive Master Key from password, decrypt DEK.
  */
 public final class CryptoManager {
 
-    /** Used ONLY for brand-new vault creation. Existing vaults read from metadata. */
-    public static final int DEFAULT_ITERATIONS = 150_000;
+    private static final String TAG = "CryptoManager";
 
-    private static final int SALT_LENGTH = 16;
+    /** FIXED iteration count -- NEVER change this. */
+    public static final int FIXED_ITERATIONS = 120_000;
+
+    /** Legacy iteration count for old CryptoUtils migration ONLY. */
+    public static final int LEGACY_ITERATIONS = 15_000;
+
+    private static final int SALT_LENGTH = 16;        // 16 bytes = 128 bits
     private static final int KEY_LENGTH_BITS = 256;
-    private static final int KEY_LENGTH_BYTES = 32;
-    private static final int GCM_IV_LENGTH = 12;
-    private static final int GCM_TAG_LENGTH = 128; // bits
-
-    /** Constant string used for HMAC-based password verification. */
-    private static final String VERIFY_CONSTANT = "MKNOTES_VAULT_VERIFY";
+    private static final int KEY_LENGTH_BYTES = 32;    // 256 / 8
+    private static final int GCM_IV_LENGTH = 12;       // 12 bytes per NIST recommendation
+    private static final int GCM_TAG_LENGTH_BITS = 128; // 128-bit auth tag
 
     private static final SecureRandom sRandom = new SecureRandom();
 
@@ -48,10 +57,11 @@ public final class CryptoManager {
         // Static utility class
     }
 
-    // ======================== KEY DERIVATION ========================
+    // ======================== SALT & DEK GENERATION ========================
 
     /**
-     * Generate a random 16-byte salt.
+     * Generate a cryptographically random 16-byte salt.
+     * Called ONCE during vault creation. NEVER regenerated after.
      */
     public static byte[] generateSalt() {
         byte[] salt = new byte[SALT_LENGTH];
@@ -60,7 +70,8 @@ public final class CryptoManager {
     }
 
     /**
-     * Generate a random 256-bit DEK (Data Encryption Key).
+     * Generate a cryptographically random 256-bit DEK (Data Encryption Key).
+     * Called ONCE during vault creation. NEVER regenerated unless vault is deleted.
      *
      * @return byte[32] random DEK
      */
@@ -70,26 +81,29 @@ public final class CryptoManager {
         return dek;
     }
 
+    // ======================== KEY DERIVATION ========================
+
     /**
      * Derive a 256-bit master key from password + salt using PBKDF2WithHmacSHA256.
-     * Iterations is ALWAYS a parameter -- never read from a constant internally.
+     * Iteration count is ALWAYS 120,000 -- no dynamic reading.
      *
-     * @param password   user's master password
-     * @param salt       16-byte salt
-     * @param iterations PBKDF2 iteration count (from stored metadata)
+     * @param password user's master password
+     * @param salt     16-byte salt (from vault metadata)
      * @return byte[32] derived master key, or null on failure
      */
-    public static byte[] deriveKey(String password, byte[] salt, int iterations) {
-        if (password == null || salt == null || iterations <= 0) {
+    public static byte[] deriveMasterKey(String password, byte[] salt) {
+        if (password == null || password.length() == 0 || salt == null || salt.length == 0) {
+            Log.e(TAG, "deriveMasterKey: invalid input");
             return null;
         }
         PBEKeySpec spec = null;
         try {
-            spec = new PBEKeySpec(password.toCharArray(), salt, iterations, KEY_LENGTH_BITS);
+            spec = new PBEKeySpec(password.toCharArray(), salt, FIXED_ITERATIONS, KEY_LENGTH_BITS);
             SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
             byte[] key = factory.generateSecret(spec).getEncoded();
             return key;
         } catch (Exception e) {
+            Log.e(TAG, "deriveMasterKey failed: " + e.getMessage());
             return null;
         } finally {
             if (spec != null) {
@@ -98,34 +112,39 @@ public final class CryptoManager {
         }
     }
 
-    // ======================== LEGACY KEY DERIVATION ========================
-
-    /** Old system iteration count (CryptoUtils used 15000 fixed). */
-    public static final int LEGACY_ITERATIONS = 15_000;
-
     /**
-     * Derive a 256-bit key using legacy parameters (PBKDF2WithHmacSHA256, 15000 iterations).
-     * Used ONLY for legacy migration when crypto_metadata is missing but old encrypted notes exist.
-     *
-     * @param password user's master password
-     * @param salt     16-byte salt (from old system or derived)
-     * @return byte[32] derived key, or null on failure
+     * Derive legacy key for migration ONLY. Uses old 15,000 iterations.
      */
     public static byte[] deriveLegacyKey(String password, byte[] salt) {
-        return deriveKey(password, salt, LEGACY_ITERATIONS);
+        if (password == null || salt == null) return null;
+        PBEKeySpec spec = null;
+        try {
+            spec = new PBEKeySpec(password.toCharArray(), salt, LEGACY_ITERATIONS, KEY_LENGTH_BITS);
+            SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            return factory.generateSecret(spec).getEncoded();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (spec != null) spec.clearPassword();
+        }
     }
 
-    // ======================== DEK WRAPPING (KEK encrypts DEK) ========================
+    // ======================== DEK WRAPPING (Master Key encrypts DEK) ========================
 
     /**
-     * Encrypt DEK with master key (KEK) using AES-256-GCM.
+     * Encrypt DEK with Master Key using AES-256-GCM.
+     * Returns a VaultBundle containing encryptedDEK, IV, and tag -- all Base64 encoded.
+     *
+     * The GCM output includes ciphertext + appended auth tag.
+     * We split them for explicit storage in Firestore.
      *
      * @param dek       byte[32] data encryption key
      * @param masterKey byte[32] key encryption key (derived from password)
-     * @return "ivHex:ciphertextHex" string for storage, or null on failure
+     * @return VaultBundle with Base64 encoded fields, or null on failure
      */
-    public static String encryptDEK(byte[] dek, byte[] masterKey) {
+    public static VaultBundle encryptDEK(byte[] dek, byte[] masterKey) {
         if (dek == null || masterKey == null) {
+            Log.e(TAG, "encryptDEK: null input");
             return null;
         }
         try {
@@ -133,56 +152,81 @@ public final class CryptoManager {
             sRandom.nextBytes(iv);
 
             SecretKeySpec keySpec = new SecretKeySpec(masterKey, "AES");
-            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
-            byte[] ciphertext = cipher.doFinal(dek);
+            byte[] ciphertextWithTag = cipher.doFinal(dek);
 
-            return bytesToHex(iv) + ":" + bytesToHex(ciphertext);
+            // Java GCM appends the 16-byte auth tag to the ciphertext
+            // Split: ciphertext = first (len - 16) bytes, tag = last 16 bytes
+            int tagBytes = GCM_TAG_LENGTH_BITS / 8; // 16
+            int cipherLen = ciphertextWithTag.length - tagBytes;
+            byte[] ciphertext = new byte[cipherLen];
+            byte[] tag = new byte[tagBytes];
+            System.arraycopy(ciphertextWithTag, 0, ciphertext, 0, cipherLen);
+            System.arraycopy(ciphertextWithTag, cipherLen, tag, 0, tagBytes);
+
+            VaultBundle bundle = new VaultBundle();
+            bundle.encryptedDEK = Base64.encodeToString(ciphertext, Base64.NO_WRAP);
+            bundle.iv = Base64.encodeToString(iv, Base64.NO_WRAP);
+            bundle.tag = Base64.encodeToString(tag, Base64.NO_WRAP);
+            return bundle;
+
         } catch (Exception e) {
+            Log.e(TAG, "encryptDEK failed: " + e.getMessage());
             return null;
         }
     }
 
     /**
-     * Decrypt DEK from stored encryptedDEK string using master key (KEK).
+     * Decrypt DEK from vault metadata using Master Key.
      *
-     * @param encryptedDEK "ivHex:ciphertextHex" from storage
-     * @param masterKey    byte[32] key encryption key
-     * @return byte[32] DEK, or null on failure (wrong password / tampered data)
+     * @param encryptedDEKBase64 Base64 encoded ciphertext (without tag)
+     * @param ivBase64           Base64 encoded IV
+     * @param tagBase64          Base64 encoded GCM auth tag
+     * @param masterKey          byte[32] derived master key
+     * @return byte[32] DEK on success, null on failure (wrong password / tampered)
      */
-    public static byte[] decryptDEK(String encryptedDEK, byte[] masterKey) {
-        if (encryptedDEK == null || masterKey == null) {
+    public static byte[] decryptDEK(String encryptedDEKBase64, String ivBase64,
+                                     String tagBase64, byte[] masterKey) {
+        if (encryptedDEKBase64 == null || ivBase64 == null || tagBase64 == null || masterKey == null) {
+            Log.e(TAG, "decryptDEK: null input");
             return null;
         }
         try {
-            int colonIdx = encryptedDEK.indexOf(':');
-            if (colonIdx <= 0) {
-                return null;
-            }
-            String ivHex = encryptedDEK.substring(0, colonIdx);
-            String cipherHex = encryptedDEK.substring(colonIdx + 1);
+            byte[] ciphertext = Base64.decode(encryptedDEKBase64, Base64.NO_WRAP);
+            byte[] iv = Base64.decode(ivBase64, Base64.NO_WRAP);
+            byte[] tag = Base64.decode(tagBase64, Base64.NO_WRAP);
 
-            if (ivHex.length() != GCM_IV_LENGTH * 2) {
+            if (iv.length != GCM_IV_LENGTH) {
+                Log.e(TAG, "decryptDEK: invalid IV length=" + iv.length);
                 return null;
             }
 
-            byte[] iv = hexToBytes(ivHex);
-            byte[] ciphertext = hexToBytes(cipherHex);
+            // Reassemble ciphertext + tag for Java GCM decryption
+            byte[] ciphertextWithTag = new byte[ciphertext.length + tag.length];
+            System.arraycopy(ciphertext, 0, ciphertextWithTag, 0, ciphertext.length);
+            System.arraycopy(tag, 0, ciphertextWithTag, ciphertext.length, tag.length);
 
             SecretKeySpec keySpec = new SecretKeySpec(masterKey, "AES");
-            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
-            byte[] dek = cipher.doFinal(ciphertext);
+            byte[] dek = cipher.doFinal(ciphertextWithTag);
 
             if (dek.length != KEY_LENGTH_BYTES) {
+                Log.e(TAG, "decryptDEK: unexpected DEK length=" + dek.length);
                 zeroFill(dek);
                 return null;
             }
             return dek;
+
+        } catch (javax.crypto.AEADBadTagException e) {
+            // Wrong password -- auth tag mismatch
+            Log.w(TAG, "decryptDEK: AEADBadTagException -- wrong password");
+            return null;
         } catch (Exception e) {
-            // AEADBadTagException = wrong password. Return null, no crash.
+            Log.e(TAG, "decryptDEK failed: " + e.getMessage());
             return null;
         }
     }
@@ -190,11 +234,12 @@ public final class CryptoManager {
     // ======================== NOTE ENCRYPTION (DEK encrypts notes) ========================
 
     /**
-     * Encrypt plaintext using AES-256-GCM with DEK.
+     * Encrypt plaintext note field using AES-256-GCM with DEK.
+     * Each call uses a RANDOM IV.
      *
      * @param plaintext text to encrypt
      * @param dek       byte[32] data encryption key
-     * @return "ivHex:ciphertextHex", or empty string for null/empty input, or null on failure
+     * @return "ivHex:ciphertextHex" for SQLite storage, or "" for null/empty, or null on failure
      */
     public static String encrypt(String plaintext, byte[] dek) {
         if (plaintext == null || plaintext.length() == 0) {
@@ -208,23 +253,25 @@ public final class CryptoManager {
             sRandom.nextBytes(iv);
 
             SecretKeySpec keySpec = new SecretKeySpec(dek, "AES");
-            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
             byte[] ciphertext = cipher.doFinal(plaintext.getBytes("UTF-8"));
 
+            // Store as ivHex:ciphertextHex (includes appended GCM tag)
             return bytesToHex(iv) + ":" + bytesToHex(ciphertext);
         } catch (Exception e) {
+            Log.e(TAG, "encrypt note failed: " + e.getMessage());
             return null;
         }
     }
 
     /**
-     * Decrypt ciphertext using AES-256-GCM with DEK.
+     * Decrypt note field using AES-256-GCM with DEK.
      *
      * @param encryptedData "ivHex:ciphertextHex"
      * @param dek           byte[32] data encryption key
-     * @return decrypted plaintext, or original data if not encrypted format, or null on decrypt failure
+     * @return decrypted plaintext, original data if not encrypted format, null on decrypt failure
      */
     public static String decrypt(String encryptedData, byte[] dek) {
         if (encryptedData == null || encryptedData.length() == 0) {
@@ -236,20 +283,20 @@ public final class CryptoManager {
         try {
             int colonIdx = encryptedData.indexOf(':');
             if (colonIdx <= 0) {
-                return encryptedData; // Not encrypted, return as-is (plain text)
+                return encryptedData; // Not encrypted, return as-is
             }
             String ivHex = encryptedData.substring(0, colonIdx);
             String cipherHex = encryptedData.substring(colonIdx + 1);
 
             if (ivHex.length() != GCM_IV_LENGTH * 2) {
-                return encryptedData; // Not encrypted format, return as-is
+                return encryptedData; // Not encrypted format
             }
 
-            // Validate hex chars in IV part
+            // Validate hex chars
             for (int i = 0; i < ivHex.length(); i++) {
                 char c = ivHex.charAt(i);
                 if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-                    return encryptedData; // Not valid hex, treat as plain text
+                    return encryptedData;
                 }
             }
 
@@ -257,26 +304,20 @@ public final class CryptoManager {
             byte[] ciphertext = hexToBytes(cipherHex);
 
             SecretKeySpec keySpec = new SecretKeySpec(dek, "AES");
-            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
             byte[] plainBytes = cipher.doFinal(ciphertext);
 
             return new String(plainBytes, "UTF-8");
         } catch (Exception e) {
-            // Decryption failed -- key mismatch or corrupted data
-            // Return null so caller knows decryption FAILED (not plain text)
+            // Decryption failed -- wrong key or corrupted
             return null;
         }
     }
 
     /**
-     * Safe decrypt: tries DEK first, on failure returns "[Decryption Failed]" marker.
-     * UI should check for null and show "Wrong Master Password" message.
-     *
-     * @param encryptedData "ivHex:ciphertextHex"
-     * @param dek           byte[32] data encryption key
-     * @return decrypted text, or DECRYPT_FAILED_MARKER on failure
+     * Safe decrypt with fallback marker for UI display.
      */
     public static final String DECRYPT_FAILED_MARKER = "[DECRYPTION_FAILED]";
 
@@ -285,7 +326,6 @@ public final class CryptoManager {
             return "";
         }
         if (dek == null) {
-            // No key available
             if (isEncrypted(encryptedData)) {
                 return DECRYPT_FAILED_MARKER;
             }
@@ -293,7 +333,6 @@ public final class CryptoManager {
         }
         String result = decrypt(encryptedData, dek);
         if (result == null) {
-            // Decryption failed -- wrong key
             return DECRYPT_FAILED_MARKER;
         }
         return result;
@@ -302,67 +341,11 @@ public final class CryptoManager {
     // ======================== LEGACY DECRYPTION ========================
 
     /**
-     * Try decrypting data using a legacy master key (direct key, no DEK layer).
-     * Returns decrypted plaintext on success, null on failure.
-     * Used to verify legacy master password by attempting to decrypt a sample note.
-     *
-     * @param encryptedData "ivHex:ciphertextHex" encrypted by old CryptoUtils
-     * @param legacyKey     byte[32] key derived via legacy PBKDF2 (15000 iterations)
-     * @return decrypted plaintext, or null if key is wrong / data corrupted
+     * Decrypt data using a legacy key (old CryptoUtils single-layer system).
+     * Same AES-256-GCM format (ivHex:ciphertextHex).
      */
     public static String decryptWithLegacyKey(String encryptedData, byte[] legacyKey) {
-        // Old CryptoUtils used the same AES-256-GCM format (ivHex:ciphertextHex)
-        // so we can reuse the standard decrypt method
         return decrypt(encryptedData, legacyKey);
-    }
-
-    // ======================== HMAC VERIFICATION ========================
-
-    /**
-     * Compute HMAC-SHA256 verification tag over constant "MKNOTES_VAULT_VERIFY".
-     *
-     * @param masterKey byte[32] derived master key
-     * @return hex string of HMAC tag, or null on failure
-     */
-    public static String computeVerifyTag(byte[] masterKey) {
-        if (masterKey == null) {
-            return null;
-        }
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            SecretKeySpec keySpec = new SecretKeySpec(masterKey, "HmacSHA256");
-            mac.init(keySpec);
-            byte[] hmacBytes = mac.doFinal(VERIFY_CONSTANT.getBytes("UTF-8"));
-            return bytesToHex(hmacBytes);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /**
-     * Verify master key by comparing HMAC tag with stored tag.
-     * Uses constant-time comparison via MessageDigest.isEqual().
-     *
-     * @param masterKey byte[32] derived master key
-     * @param storedTag hex string of stored HMAC tag
-     * @return true if master key is correct
-     */
-    public static boolean verifyTag(byte[] masterKey, String storedTag) {
-        if (masterKey == null || storedTag == null || storedTag.length() == 0) {
-            return false;
-        }
-        try {
-            String computedTag = computeVerifyTag(masterKey);
-            if (computedTag == null) {
-                return false;
-            }
-            // Constant-time comparison
-            byte[] computed = hexToBytes(computedTag);
-            byte[] stored = hexToBytes(storedTag);
-            return MessageDigest.isEqual(computed, stored);
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     // ======================== MEMORY SAFETY ========================
@@ -378,9 +361,6 @@ public final class CryptoManager {
 
     // ======================== HEX UTILITY ========================
 
-    /**
-     * Convert byte array to lowercase hex string.
-     */
     public static String bytesToHex(byte[] bytes) {
         if (bytes == null) return "";
         StringBuilder sb = new StringBuilder(bytes.length * 2);
@@ -394,9 +374,6 @@ public final class CryptoManager {
         return sb.toString();
     }
 
-    /**
-     * Convert hex string to byte array.
-     */
     public static byte[] hexToBytes(String hex) {
         if (hex == null || hex.length() == 0) return new byte[0];
         int len = hex.length();
@@ -427,5 +404,17 @@ public final class CryptoManager {
             }
         }
         return true;
+    }
+
+    // ======================== VAULT BUNDLE ========================
+
+    /**
+     * Holds the result of DEK encryption for Firestore storage.
+     * All fields are Base64 encoded strings.
+     */
+    public static class VaultBundle {
+        public String encryptedDEK; // Base64 ciphertext (without tag)
+        public String iv;           // Base64 IV
+        public String tag;          // Base64 GCM auth tag
     }
 }
