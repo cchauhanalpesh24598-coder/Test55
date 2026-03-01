@@ -11,48 +11,45 @@ import android.util.Log;
  * - Only the DEK wrapper (encryptedDEK) changes because master key changes
  *
  * Flow:
- * 1. Verify old password via HMAC
- * 2. Decrypt DEK with old master key
- * 3. Generate new salt
- * 4. Derive new master key with same/upgraded iterations
- * 5. Re-encrypt DEK with new master key
- * 6. Compute new HMAC verifyTag
- * 7. Update Firestore + local storage
- * 8. Zero-fill all intermediate key material
+ * 1. Verify old password by attempting to decrypt DEK
+ * 2. Generate new salt
+ * 3. Derive new master key with FIXED 120,000 iterations
+ * 4. Re-encrypt DEK with new master key (new IV, new tag)
+ * 5. Update Firestore + local storage
+ * 6. Zero-fill all intermediate key material
  */
 public class PasswordChangeManager {
 
     private static final String TAG = "PasswordChangeManager";
 
     /**
-     * Change the master password. Delegates to KeyManager.changePassword().
+     * Change the master password asynchronously.
+     * Delegates to KeyManager.changePassword() which runs on background thread.
      *
      * @param context     application context
      * @param oldPassword current master password
      * @param newPassword new master password
-     * @return true on success, false on failure (wrong old password, crypto error)
+     * @param callback    result callback (called on background thread)
      */
-    public static boolean changePassword(Context context, String oldPassword, String newPassword) {
+    public static void changePassword(Context context, String oldPassword, String newPassword,
+                                       KeyManager.VaultCallback callback) {
         if (oldPassword == null || newPassword == null) {
-            return false;
+            if (callback != null) callback.onError("Passwords cannot be null");
+            return;
         }
         if (newPassword.length() < 8) {
             Log.e(TAG, "New password too short");
-            return false;
+            if (callback != null) callback.onError("New password must be at least 8 characters");
+            return;
         }
 
         KeyManager km = KeyManager.getInstance(context);
         if (!km.isVaultInitialized()) {
             Log.e(TAG, "Cannot change password: vault not initialized");
-            return false;
+            if (callback != null) callback.onError("Vault not initialized");
+            return;
         }
 
-        boolean success = km.changePassword(oldPassword, newPassword);
-        if (success) {
-            Log.d(TAG, "Password changed successfully via KeyManager");
-        } else {
-            Log.e(TAG, "Password change failed");
-        }
-        return success;
+        km.changePassword(oldPassword, newPassword, callback);
     }
 }
