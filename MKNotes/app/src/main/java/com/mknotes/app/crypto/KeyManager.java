@@ -521,23 +521,26 @@ public class KeyManager {
      * Fetch vault metadata from Firestore and cache locally.
      * Used on reinstall after Firebase login.
      *
-     * FIX: Uses Source.SERVER to bypass offline cache and get fresh data.
-     * This prevents stale cache from returning empty/old results after reinstall.
-     * Falls back to Source.DEFAULT if server is unreachable.
+     * FIX v2.2: Returns 3-state result to distinguish "no vault" from "network error".
+     * This is the CRITICAL fix that prevents accidental vault creation on poor network.
      *
-     * @param callback called with true if vault found & cached, false otherwise
+     * Uses Source.SERVER to bypass offline cache and get fresh data.
+     * Falls back to Source.CACHE if server is unreachable (might have local Firestore cache).
+     * If BOTH fail: returns NETWORK_ERROR (never NO_VAULT_EXISTS).
+     *
+     * @param callback called with VAULT_FOUND, NO_VAULT_EXISTS, or NETWORK_ERROR
      */
-    public void fetchVaultFromFirestore(final VaultFetchCallback callback) {
+    public void fetchVaultFromFirestoreWithResult(final VaultFetchResultCallback callback) {
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
         if (!authManager.isLoggedIn()) {
             Log.w(TAG, "[VAULT_FETCH] Not logged in");
-            if (callback != null) callback.onResult(false);
+            if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
             return;
         }
         String uid = authManager.getUid();
         if (uid == null) {
             Log.w(TAG, "[VAULT_FETCH] UID null");
-            if (callback != null) callback.onResult(false);
+            if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
             return;
         }
 
@@ -548,25 +551,56 @@ public class KeyManager {
         // FIX: Use Source.SERVER to bypass potentially stale offline cache
         docRef.get(Source.SERVER)
                 .addOnSuccessListener(doc -> {
-                    if (processVaultDocument(doc, callback)) return;
-                    Log.d(TAG, "[VAULT_FETCH] No vault found on server");
-                    if (callback != null) callback.onResult(false);
+                    // Server responded successfully
+                    if (processVaultDocument(doc, null)) {
+                        Log.d(TAG, "[VAULT_FETCH] Vault found on server");
+                        if (callback != null) callback.onResult(VaultFetchResult.VAULT_FOUND);
+                    } else {
+                        // Server responded but document doesn't exist or has no valid data
+                        // This is a CONFIRMED "no vault" -- safe to create
+                        Log.d(TAG, "[VAULT_FETCH] Server confirms no vault exists");
+                        if (callback != null) callback.onResult(VaultFetchResult.NO_VAULT_EXISTS);
+                    }
                 })
                 .addOnFailureListener(e -> {
-                    // Server unreachable -- fall back to cache (might work if Firestore
-                    // synced before app data was cleared but after reinstall)
-                    Log.w(TAG, "[VAULT_FETCH] Server fetch failed, trying cache: " + e.getMessage());
+                    // Server unreachable -- try cache as last resort
+                    Log.w(TAG, "[VAULT_FETCH] Server fetch failed: " + e.getMessage() + ", trying cache...");
                     docRef.get(Source.CACHE)
                             .addOnSuccessListener(doc -> {
-                                if (processVaultDocument(doc, callback)) return;
-                                Log.d(TAG, "[VAULT_FETCH] No vault in cache either");
-                                if (callback != null) callback.onResult(false);
+                                if (processVaultDocument(doc, null)) {
+                                    Log.d(TAG, "[VAULT_FETCH] Vault found in cache");
+                                    if (callback != null) callback.onResult(VaultFetchResult.VAULT_FOUND);
+                                } else {
+                                    // CRITICAL: Cache miss does NOT mean "no vault".
+                                    // It means we couldn't reach server AND cache has nothing.
+                                    // On fresh install, Firestore cache is EMPTY, so this is expected.
+                                    // We MUST NOT allow vault creation here.
+                                    Log.w(TAG, "[VAULT_FETCH] Cache empty -- NETWORK_ERROR (cannot confirm vault state)");
+                                    if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
+                                }
                             })
                             .addOnFailureListener(cacheError -> {
-                                Log.e(TAG, "[VAULT_FETCH] Cache also failed: " + cacheError.getMessage());
-                                if (callback != null) callback.onResult(false);
+                                Log.e(TAG, "[VAULT_FETCH] Both server and cache failed: " + cacheError.getMessage());
+                                if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
                             });
                 });
+    }
+
+    /**
+     * Fetch vault metadata from Firestore and cache locally.
+     * OLD API kept for backward compatibility with ensureVaultUploaded() etc.
+     * WARNING: This uses 2-state boolean. Do NOT use for vault creation decisions.
+     *
+     * @param callback called with true if vault found & cached, false otherwise
+     */
+    public void fetchVaultFromFirestore(final VaultFetchCallback callback) {
+        fetchVaultFromFirestoreWithResult(new VaultFetchResultCallback() {
+            public void onResult(VaultFetchResult result) {
+                if (callback != null) {
+                    callback.onResult(result == VaultFetchResult.VAULT_FOUND);
+                }
+            }
+        });
     }
 
     /**
@@ -620,17 +654,18 @@ public class KeyManager {
      * Check if notes exist in Firestore (safety check before vault creation).
      * If notes exist but vault is missing, creating new vault = data loss.
      *
-     * FIX: Uses Source.SERVER to get accurate data, not stale cache.
+     * FIX v2.2: Returns 3-state result. On NETWORK_ERROR, caller MUST NOT create vault.
+     * Uses Source.SERVER to get accurate data, not stale cache.
      */
-    public void checkCloudNotesExist(final VaultFetchCallback callback) {
+    public void checkCloudNotesExistWithResult(final VaultFetchResultCallback callback) {
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
         if (!authManager.isLoggedIn()) {
-            if (callback != null) callback.onResult(false);
+            if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
             return;
         }
         String uid = authManager.getUid();
         if (uid == null) {
-            if (callback != null) callback.onResult(false);
+            if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
             return;
         }
 
@@ -641,11 +676,18 @@ public class KeyManager {
                 .get(Source.SERVER)
                 .addOnSuccessListener(querySnapshot -> {
                     boolean exists = querySnapshot != null && !querySnapshot.isEmpty();
-                    Log.d(TAG, "[NOTES_CHECK] notes exist=" + exists);
-                    if (callback != null) callback.onResult(exists);
+                    Log.d(TAG, "[NOTES_CHECK] Server confirms: notes exist=" + exists);
+                    if (exists) {
+                        // Notes exist but vault is missing = VAULT_FOUND used as "notes found"
+                        // Re-purpose: VAULT_FOUND = "yes, notes exist" (caller interprets)
+                        if (callback != null) callback.onResult(VaultFetchResult.VAULT_FOUND);
+                    } else {
+                        // Server confirms no notes = safe to create vault
+                        if (callback != null) callback.onResult(VaultFetchResult.NO_VAULT_EXISTS);
+                    }
                 })
                 .addOnFailureListener(e -> {
-                    Log.e(TAG, "[NOTES_CHECK] server check failed, trying cache: " + e.getMessage());
+                    Log.e(TAG, "[NOTES_CHECK] Server check failed: " + e.getMessage() + ", trying cache...");
                     // Fallback to cache
                     FirebaseFirestore.getInstance()
                             .collection("users").document(uid)
@@ -654,12 +696,19 @@ public class KeyManager {
                             .get(Source.CACHE)
                             .addOnSuccessListener(querySnapshot -> {
                                 boolean exists = querySnapshot != null && !querySnapshot.isEmpty();
-                                Log.d(TAG, "[NOTES_CHECK] cache: notes exist=" + exists);
-                                if (callback != null) callback.onResult(exists);
+                                Log.d(TAG, "[NOTES_CHECK] Cache: notes exist=" + exists);
+                                if (exists) {
+                                    if (callback != null) callback.onResult(VaultFetchResult.VAULT_FOUND);
+                                } else {
+                                    // CRITICAL: Cache empty on fresh install doesn't mean no notes.
+                                    // Return NETWORK_ERROR to block vault creation.
+                                    Log.w(TAG, "[NOTES_CHECK] Cache empty -- NETWORK_ERROR");
+                                    if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
+                                }
                             })
                             .addOnFailureListener(e2 -> {
-                                Log.e(TAG, "[NOTES_CHECK] cache also failed: " + e2.getMessage());
-                                if (callback != null) callback.onResult(false);
+                                Log.e(TAG, "[NOTES_CHECK] Both server and cache failed");
+                                if (callback != null) callback.onResult(VaultFetchResult.NETWORK_ERROR);
                             });
                 });
     }
@@ -869,6 +918,32 @@ public class KeyManager {
 
     // ======================== CALLBACKS ========================
 
+    /**
+     * 3-state result for vault fetch operations.
+     * CRITICAL for reinstall safety:
+     * - VAULT_FOUND: Vault exists in Firestore, cached locally.
+     * - NO_VAULT_EXISTS: Confirmed no vault on server (safe to create new one).
+     * - NETWORK_ERROR: Could not reach server AND no cache. MUST NOT create new vault.
+     */
+    public enum VaultFetchResult {
+        VAULT_FOUND,
+        NO_VAULT_EXISTS,
+        NETWORK_ERROR
+    }
+
+    /**
+     * 3-state callback for vault fetch. Replaces the old boolean callback.
+     * Callers MUST handle NETWORK_ERROR by showing a "connect to internet" error
+     * and NEVER allowing vault creation.
+     */
+    public interface VaultFetchResultCallback {
+        void onResult(VaultFetchResult result);
+    }
+
+    /**
+     * OLD callback kept for backward compat where 2-state is acceptable.
+     * NEVER use this for vault creation decisions -- use VaultFetchResultCallback.
+     */
     public interface VaultFetchCallback {
         void onResult(boolean vaultFound);
     }
