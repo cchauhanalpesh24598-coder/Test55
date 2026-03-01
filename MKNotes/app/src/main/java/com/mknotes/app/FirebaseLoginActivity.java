@@ -163,28 +163,31 @@ public class FirebaseLoginActivity extends AppCompatActivity {
      *
      * Path: users/{uid}/crypto_metadata/vault
      *
-     * If found: redirect to UNLOCK.
-     * If not found + notes exist: redirect to LEGACY RECOVERY.
-     * If not found + no notes: redirect to CREATE.
+     * FIX v2.2: Uses 3-state callback to distinguish "no vault" from "network error".
+     * On NETWORK_ERROR: shows error and blocks progression to prevent accidental vault creation.
      */
     private void fetchVaultAndProceed() {
         final KeyManager km = KeyManager.getInstance(this);
 
         Log.d(TAG, "[VAULT_FETCH] Starting vault fetch after Firebase login");
 
-        km.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
-            public void onResult(final boolean vaultFound) {
+        km.fetchVaultFromFirestoreWithResult(new KeyManager.VaultFetchResultCallback() {
+            public void onResult(final KeyManager.VaultFetchResult result) {
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        if (vaultFound) {
-                            Log.d(TAG, "[VAULT_FETCH] Vault found, going to UNLOCK");
-                            Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                            startActivity(intent);
-                            finish();
-                        } else {
-                            Log.d(TAG, "[VAULT_FETCH] No vault, checking for notes...");
-                            checkNotesBeforeCreate(km);
+                        switch (result) {
+                            case VAULT_FOUND:
+                                Log.d(TAG, "[VAULT_FETCH] Vault found, going to UNLOCK");
+                                goToMasterPassword(false);
+                                break;
+                            case NO_VAULT_EXISTS:
+                                Log.d(TAG, "[VAULT_FETCH] Server confirms no vault, checking for notes...");
+                                checkNotesBeforeCreate(km);
+                                break;
+                            case NETWORK_ERROR:
+                                Log.w(TAG, "[VAULT_FETCH] NETWORK_ERROR -- cannot proceed safely");
+                                showError(getString(R.string.vault_network_error_detail));
+                                break;
                         }
                     }
                 });
@@ -194,34 +197,46 @@ public class FirebaseLoginActivity extends AppCompatActivity {
 
     /**
      * Check if notes exist in Firestore before allowing vault creation.
-     * If notes exist but vault is missing -> legacy recovery.
-     * If no notes -> fresh user, go to CREATE.
+     * FIX v2.2: Uses 3-state callback. On NETWORK_ERROR, blocks progression.
      */
     private void checkNotesBeforeCreate(final KeyManager km) {
-        km.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
-            public void onResult(final boolean notesExist) {
+        km.checkCloudNotesExistWithResult(new KeyManager.VaultFetchResultCallback() {
+            public void onResult(final KeyManager.VaultFetchResult result) {
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        if (notesExist) {
-                            // Notes exist but vault missing -> legacy recovery
-                            Log.d(TAG, "[LEGACY_DETECTED] Notes exist, vault missing. Legacy recovery.");
-                            Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
-                            intent.putExtra("legacy_recovery", true);
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                            startActivity(intent);
-                            finish();
-                        } else {
-                            // Fresh user
-                            Log.d(TAG, "[FRESH_USER] No vault, no notes. CREATE mode.");
-                            Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                            startActivity(intent);
-                            finish();
+                        switch (result) {
+                            case VAULT_FOUND:
+                                // VAULT_FOUND here = "notes exist but vault missing"
+                                Log.d(TAG, "[LEGACY_DETECTED] Notes exist, vault missing. Legacy recovery.");
+                                goToMasterPassword(true);
+                                break;
+                            case NO_VAULT_EXISTS:
+                                // Server confirms no notes AND no vault -- fresh user
+                                Log.d(TAG, "[FRESH_USER] No vault, no notes. CREATE mode.");
+                                goToMasterPassword(false);
+                                break;
+                            case NETWORK_ERROR:
+                                Log.w(TAG, "[NOTES_CHECK] NETWORK_ERROR -- cannot proceed safely");
+                                showError(getString(R.string.vault_network_error_detail));
+                                break;
                         }
                     }
                 });
             }
         });
+    }
+
+    /**
+     * Helper to launch MasterPasswordActivity with optional legacy_recovery flag.
+     */
+    private void goToMasterPassword(boolean legacyRecovery) {
+        Intent intent = new Intent(FirebaseLoginActivity.this, MasterPasswordActivity.class);
+        if (legacyRecovery) {
+            intent.putExtra("legacy_recovery", true);
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        startActivity(intent);
+        finish();
     }
 
     private void showError(String message) {
