@@ -177,15 +177,28 @@ public class FirebaseLoginActivity extends AppCompatActivity {
                     public void run() {
                         switch (result) {
                             case VAULT_FOUND:
-                                Log.d(TAG, "[VAULT_FETCH] Vault found, going to UNLOCK");
+                                Log.d(TAG, "[VAULT_FETCH] Vault found in Firestore, going to UNLOCK");
                                 goToMasterPassword(false);
                                 break;
+
                             case NO_VAULT_EXISTS:
-                                Log.d(TAG, "[VAULT_FETCH] Server confirms no vault, checking for notes...");
-                                checkNotesBeforeCreate(km);
+                                // ✅ KEY FIX: Agar vault locally exist karti hai
+                                // (user ne login se pehle password banaya tha)
+                                // toh ABHI Firestore mein upload karo
+                                if (km.isVaultInitialized()) {
+                                    Log.d(TAG, "[VAULT_UPLOAD] Local vault found! Uploading to Firestore now...");
+                                    km.uploadVaultToFirestore();
+                                    // Vault already locally hai, seedha proceed karo
+                                    goToMasterPassword(false);
+                                } else {
+                                    Log.d(TAG, "[VAULT_FETCH] No vault anywhere, checking for notes...");
+                                    checkNotesBeforeCreate(km);
+                                }
                                 break;
+
                             case NETWORK_ERROR:
                                 Log.w(TAG, "[VAULT_FETCH] NETWORK_ERROR -- cannot proceed safely");
+                                btnAction.setEnabled(true);
                                 showError(getString(R.string.vault_network_error_detail));
                                 break;
                         }
