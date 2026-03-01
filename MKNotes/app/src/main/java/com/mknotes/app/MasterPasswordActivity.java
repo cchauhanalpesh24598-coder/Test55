@@ -150,7 +150,9 @@ public class MasterPasswordActivity extends Activity {
 
     /**
      * Check Firestore for vault metadata (reinstall scenario).
-     * If found: UNLOCK mode. If not: check for orphan notes.
+     * FIX v2.2: Uses 3-state callback to distinguish "no vault" from "network error".
+     * On NETWORK_ERROR: shows retry message, NEVER allows vault creation.
+     * This prevents accidental DEK regeneration on poor/slow network.
      */
     private void checkFirestoreVault() {
         if (keyManager.isVaultInitialized()) {
@@ -163,17 +165,24 @@ public class MasterPasswordActivity extends Activity {
             btnAction.setEnabled(false);
             textSubtitle.setText("Fetching vault from cloud...");
 
-            keyManager.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
-                public void onResult(final boolean vaultFound) {
+            keyManager.fetchVaultFromFirestoreWithResult(new KeyManager.VaultFetchResultCallback() {
+                public void onResult(final KeyManager.VaultFetchResult result) {
                     runOnUiThread(new Runnable() {
                         public void run() {
                             btnAction.setEnabled(true);
-                            if (vaultFound) {
-                                Log.d(TAG, "[VAULT_FETCH] Vault found, switching to UNLOCK");
-                                setupUnlockMode();
-                            } else {
-                                Log.d(TAG, "[VAULT_FETCH] No vault, checking for orphan notes...");
-                                checkCloudNotesBeforeCreate();
+                            switch (result) {
+                                case VAULT_FOUND:
+                                    Log.d(TAG, "[VAULT_FETCH] Vault found, switching to UNLOCK");
+                                    setupUnlockMode();
+                                    break;
+                                case NO_VAULT_EXISTS:
+                                    Log.d(TAG, "[VAULT_FETCH] Server confirms no vault, checking for orphan notes...");
+                                    checkCloudNotesBeforeCreate();
+                                    break;
+                                case NETWORK_ERROR:
+                                    Log.w(TAG, "[VAULT_FETCH] NETWORK_ERROR -- blocking vault creation");
+                                    setupNetworkErrorMode();
+                                    break;
                             }
                         }
                     });
@@ -187,25 +196,61 @@ public class MasterPasswordActivity extends Activity {
 
     /**
      * SAFETY: Check if notes exist before allowing vault creation.
-     * If notes exist but vault is missing -> show error (crypto_metadata missing).
-     * If no notes -> allow fresh vault creation.
+     * FIX v2.2: Uses 3-state callback. NETWORK_ERROR blocks vault creation.
      */
     private void checkCloudNotesBeforeCreate() {
-        keyManager.checkCloudNotesExist(new KeyManager.VaultFetchCallback() {
-            public void onResult(final boolean notesExist) {
+        keyManager.checkCloudNotesExistWithResult(new KeyManager.VaultFetchResultCallback() {
+            public void onResult(final KeyManager.VaultFetchResult result) {
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        if (notesExist) {
-                            // Notes exist but vault metadata is missing
-                            Log.d(TAG, "[LEGACY_DETECTED] Notes exist but vault missing");
-                            setupLegacyRecoveryMode();
-                        } else {
-                            // No notes, no vault -- fresh user
-                            Log.d(TAG, "[FRESH_USER] No notes, no vault, allowing CREATE");
-                            setupCreateMode();
+                        switch (result) {
+                            case VAULT_FOUND:
+                                // VAULT_FOUND here means "notes exist but vault missing"
+                                Log.d(TAG, "[LEGACY_DETECTED] Notes exist but vault missing");
+                                setupLegacyRecoveryMode();
+                                break;
+                            case NO_VAULT_EXISTS:
+                                // Server confirms: no notes AND no vault -- truly fresh user
+                                Log.d(TAG, "[FRESH_USER] No notes, no vault, allowing CREATE");
+                                setupCreateMode();
+                                break;
+                            case NETWORK_ERROR:
+                                // Cannot confirm state -- block vault creation
+                                Log.w(TAG, "[NOTES_CHECK] NETWORK_ERROR -- blocking vault creation");
+                                setupNetworkErrorMode();
+                                break;
                         }
                     }
                 });
+            }
+        });
+    }
+
+    /**
+     * FIX v2.2: Network error mode -- shown when we cannot reach Firestore
+     * to confirm whether a vault exists. NEVER allows vault creation.
+     * User must connect to internet and retry.
+     */
+    private void setupNetworkErrorMode() {
+        toolbarTitle.setText(R.string.vault_network_error_title);
+        textSubtitle.setText(R.string.vault_network_error_subtitle);
+        editPassword.setVisibility(View.GONE);
+        editConfirmPassword.setVisibility(View.GONE);
+        if (textStrengthHint != null) textStrengthHint.setVisibility(View.GONE);
+        if (cbShowPassword != null) cbShowPassword.setVisibility(View.GONE);
+        textError.setText(R.string.vault_network_error_detail);
+        textError.setVisibility(View.VISIBLE);
+        btnAction.setText(R.string.vault_network_error_retry);
+        btnAction.setEnabled(true);
+        btnAction.setVisibility(View.VISIBLE);
+
+        btnAction.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                // Reset UI and retry
+                editPassword.setVisibility(View.VISIBLE);
+                textError.setVisibility(View.GONE);
+                if (cbShowPassword != null) cbShowPassword.setVisibility(View.VISIBLE);
+                checkFirestoreVault();
             }
         });
     }
@@ -297,16 +342,27 @@ public class MasterPasswordActivity extends Activity {
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
         if (authManager.isLoggedIn()) {
             final String pwd = password;
-            keyManager.fetchVaultFromFirestore(new KeyManager.VaultFetchCallback() {
-                public void onResult(final boolean vaultFound) {
+            keyManager.fetchVaultFromFirestoreWithResult(new KeyManager.VaultFetchResultCallback() {
+                public void onResult(final KeyManager.VaultFetchResult result) {
                     runOnUiThread(new Runnable() {
                         public void run() {
-                            if (vaultFound) {
-                                Log.w(TAG, "[SAFETY] Vault appeared in Firestore, switching to UNLOCK");
-                                btnAction.setEnabled(true);
-                                setupUnlockMode();
-                            } else {
-                                performVaultCreation(pwd);
+                            switch (result) {
+                                case VAULT_FOUND:
+                                    Log.w(TAG, "[SAFETY] Vault appeared in Firestore, switching to UNLOCK");
+                                    btnAction.setEnabled(true);
+                                    setupUnlockMode();
+                                    break;
+                                case NO_VAULT_EXISTS:
+                                    // Server confirms no vault -- safe to create
+                                    performVaultCreation(pwd);
+                                    break;
+                                case NETWORK_ERROR:
+                                    // Cannot confirm -- block creation
+                                    Log.w(TAG, "[SAFETY] Network error during pre-create check -- blocking");
+                                    btnAction.setEnabled(true);
+                                    textSubtitle.setText(R.string.master_password_subtitle_create);
+                                    showError(getString(R.string.vault_network_error_detail));
+                                    break;
                             }
                         }
                     });
