@@ -380,6 +380,12 @@ public class MasterPasswordActivity extends Activity {
                                 sessionManager.setPasswordSetFlag(true);
                                 sessionManager.updateSessionTimestamp();
                                 sessionManager.setEncryptionMigrated(true);
+
+                                // CRITICAL FIX: Ensure vault is uploaded to Firestore
+                                // If initial upload failed (network error, offline, etc.),
+                                // this retries the upload so reinstall/multi-device works.
+                                keyManager.ensureVaultUploaded();
+
                                 launchMain();
                             } else {
                                 Log.w(TAG, "[VAULT_UNLOCK_FAILED] Wrong password");
@@ -445,6 +451,8 @@ public class MasterPasswordActivity extends Activity {
         if (migrated) {
             sessionManager.clearOldCredentials();
             sessionManager.setEncryptionMigrated(true);
+            // Ensure vault is uploaded after migration
+            keyManager.ensureVaultUploaded();
             Toast.makeText(this, R.string.master_password_set_success, Toast.LENGTH_SHORT).show();
             launchMain();
         } else {
