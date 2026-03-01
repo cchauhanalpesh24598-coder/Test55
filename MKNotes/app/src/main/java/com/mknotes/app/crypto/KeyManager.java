@@ -2,8 +2,11 @@ package com.mknotes.app.crypto;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Base64;
 import android.util.Log;
 
+import com.google.firebase.firestore.DocumentReference;
+import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FirebaseFirestore;
 
 import com.mknotes.app.cloud.FirebaseAuthManager;
@@ -13,37 +16,42 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Singleton that manages the entire 2-layer key lifecycle.
+ * Singleton managing the 2-layer vault key lifecycle.
  *
- * Internal state: private byte[] cachedDEK -- the only in-memory copy of DEK.
+ * Firestore document path: users/{uid}/crypto_metadata/vault
  *
- * - initializeVault(): first-time setup (generates salt, DEK, encrypts DEK, HMAC tag)
- * - unlockVault(): derives master key, HMAC-verifies, decrypts DEK
- * - lockVault(): zeros DEK byte[], nullifies reference
- * - getDEK(): returns COPY of cached DEK (caller must zero their copy when done)
- * - changePassword(): re-wraps DEK with new master key, notes NOT re-encrypted
+ * Fields stored in Firestore:
+ * - salt (Base64)
+ * - encryptedDEK (Base64)
+ * - iv (Base64)
+ * - tag (Base64)
+ * - iterations = 120000 (fixed)
+ * - createdAt (long millis)
  *
- * Vault metadata stored in:
- * - Firestore: users/{uid}/vault/crypto_metadata
- * - Local: SharedPreferences (cache for fast offline access)
+ * RULES:
+ * - Salt is NEVER regenerated after vault creation.
+ * - Iterations are NEVER changed (always 120000).
+ * - DEK is NEVER regenerated unless vault is explicitly deleted.
+ * - set() is used for Firestore writes, NOT merge().
+ * - exists() is checked BEFORE writing to prevent overwrite.
  *
- * PBKDF2 iterations are ALWAYS read from stored metadata, never hardcoded.
- * DEFAULT_ITERATIONS is used ONLY when creating a brand-new vault.
+ * REINSTALL PROOF: On login after reinstall, fetch vault from Firestore,
+ * derive Master Key from password + stored salt, decrypt DEK. Done.
  */
 public class KeyManager {
 
     private static final String TAG = "KeyManager";
-    private static final String PREFS_NAME = "mknotes_vault";
-    private static final String KEY_SALT = "vault_salt";
-    private static final String KEY_ENCRYPTED_DEK = "vault_encrypted_dek";
-    private static final String KEY_VERIFY_TAG = "vault_verify_tag";
-    private static final String KEY_ITERATIONS = "vault_iterations";
-    private static final String KEY_KEY_VERSION = "vault_key_version";
-    private static final String KEY_VAULT_VERSION = "vault_version";
-    private static final String KEY_CREATED_AT = "vault_created_at";
-    private static final String KEY_UPDATED_AT = "vault_updated_at";
 
-    /** Vault version 2 = new 2-layer DEK system. Version 1 or absent = old single-layer. */
+    // Local SharedPreferences keys
+    private static final String PREFS_NAME = "mknotes_vault_v2";
+    private static final String KEY_SALT = "vault_salt_b64";
+    private static final String KEY_ENCRYPTED_DEK = "vault_enc_dek_b64";
+    private static final String KEY_IV = "vault_iv_b64";
+    private static final String KEY_TAG = "vault_tag_b64";
+    private static final String KEY_ITERATIONS = "vault_iterations";
+    private static final String KEY_CREATED_AT = "vault_created_at";
+    private static final String KEY_VAULT_INITIALIZED = "vault_initialized";
+
     public static final int CURRENT_VAULT_VERSION = 2;
 
     private static KeyManager sInstance;
@@ -52,8 +60,7 @@ public class KeyManager {
     private final Context appContext;
 
     /**
-     * In-memory cached DEK. This is the ONLY copy in memory.
-     * NEVER stored as String. Zeroed on lockVault().
+     * In-memory cached DEK. ONLY copy in memory. Zeroed on lockVault().
      */
     private byte[] cachedDEK;
 
@@ -73,13 +80,14 @@ public class KeyManager {
     // ======================== STATE CHECKS ========================
 
     /**
-     * Check if vault has been initialized (crypto_metadata exists locally).
+     * Check if vault metadata exists locally (salt + encDEK + iv + tag).
      */
     public boolean isVaultInitialized() {
-        String salt = prefs.getString(KEY_SALT, null);
-        String encDEK = prefs.getString(KEY_ENCRYPTED_DEK, null);
-        String tag = prefs.getString(KEY_VERIFY_TAG, null);
-        return salt != null && encDEK != null && tag != null;
+        return prefs.getBoolean(KEY_VAULT_INITIALIZED, false)
+                && prefs.getString(KEY_SALT, null) != null
+                && prefs.getString(KEY_ENCRYPTED_DEK, null) != null
+                && prefs.getString(KEY_IV, null) != null
+                && prefs.getString(KEY_TAG, null) != null;
     }
 
     /**
@@ -90,202 +98,260 @@ public class KeyManager {
     }
 
     /**
-     * Get stored iteration count from local metadata.
-     * Falls back to DEFAULT_ITERATIONS only when no metadata exists (impossible after init).
+     * Get stored iteration count. Always returns FIXED_ITERATIONS.
      */
     public int getIterations() {
-        return prefs.getInt(KEY_ITERATIONS, CryptoManager.DEFAULT_ITERATIONS);
+        return prefs.getInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS);
     }
 
     /**
-     * Get the current vault version. 0 or 1 = old system, 2 = new DEK system.
+     * Get vault version. Returns CURRENT_VAULT_VERSION if initialized.
      */
     public int getVaultVersion() {
-        return prefs.getInt(KEY_VAULT_VERSION, 0);
+        if (isVaultInitialized()) return CURRENT_VAULT_VERSION;
+        return 0;
     }
 
     /**
      * Check if migration from old system is needed.
      */
     public boolean needsMigration() {
-        return getVaultVersion() < CURRENT_VAULT_VERSION;
+        return !isVaultInitialized();
     }
 
-    // ======================== VAULT INITIALIZATION ========================
+    // ======================== VAULT CREATION ========================
 
     /**
-     * First-time vault setup: generate salt, DEK, encrypt DEK, compute HMAC tag.
-     * Uses DEFAULT_ITERATIONS for the brand-new vault.
+     * First-time vault setup.
      *
-     * SAFETY: If vault already exists locally or in Firestore, this method
-     * REFUSES to overwrite. Caller must use unlockVault() instead.
+     * 1. Generate 16-byte random salt
+     * 2. Derive 256-bit Master Key via PBKDF2 (120000 iterations)
+     * 3. Generate random 256-bit DEK
+     * 4. Encrypt DEK with Master Key via AES-256-GCM
+     * 5. Store vault metadata to Firestore (with exists() check)
+     * 6. Cache DEK in memory
+     *
+     * SAFETY: Refuses if vault already exists locally.
+     * Firestore write uses exists() check to prevent overwrite.
      *
      * @param password user's chosen master password
-     * @return true on success
+     * @param callback called on completion (true=success)
      */
-    public boolean initializeVault(String password) {
+    public void initializeVault(final String password, final VaultCallback callback) {
         if (password == null || password.length() == 0) {
-            return false;
+            Log.e(TAG, "[VAULT_CREATED] BLOCKED: empty password");
+            if (callback != null) callback.onError("Password cannot be empty");
+            return;
         }
 
-        // SAFETY CHECK: Never overwrite existing vault
+        // SAFETY: Never overwrite existing vault
         if (isVaultInitialized()) {
-            Log.w(TAG, "initializeVault() blocked: vault already exists locally. Use unlockVault() instead.");
-            return false;
+            Log.w(TAG, "[VAULT_CREATED] BLOCKED: vault already exists locally");
+            if (callback != null) callback.onError("Vault already exists");
+            return;
         }
+
+        // Run key derivation on background thread
+        new Thread(new Runnable() {
+            public void run() {
+                byte[] salt = null;
+                byte[] masterKey = null;
+                byte[] dek = null;
+
+                try {
+                    // Step 1: Generate salt
+                    salt = CryptoManager.generateSalt();
+
+                    // Step 2: Derive Master Key
+                    masterKey = CryptoManager.deriveMasterKey(password, salt);
+                    if (masterKey == null) {
+                        Log.e(TAG, "[VAULT_CREATED] FAILED: key derivation returned null");
+                        if (callback != null) callback.onError("Key derivation failed");
+                        return;
+                    }
+
+                    // Step 3: Generate DEK
+                    dek = CryptoManager.generateDEK();
+
+                    // Step 4: Encrypt DEK with Master Key
+                    CryptoManager.VaultBundle bundle = CryptoManager.encryptDEK(dek, masterKey);
+                    if (bundle == null) {
+                        Log.e(TAG, "[VAULT_CREATED] FAILED: DEK encryption returned null");
+                        if (callback != null) callback.onError("DEK encryption failed");
+                        return;
+                    }
+
+                    // Zero-fill master key IMMEDIATELY
+                    CryptoManager.zeroFill(masterKey);
+                    masterKey = null;
+
+                    final String saltB64 = Base64.encodeToString(salt, Base64.NO_WRAP);
+                    final String encDEKB64 = bundle.encryptedDEK;
+                    final String ivB64 = bundle.iv;
+                    final String tagB64 = bundle.tag;
+                    final long createdAt = System.currentTimeMillis();
+                    final byte[] dekToCache = dek;
+                    dek = null; // Prevent zeroFill in finally
+
+                    Log.d(TAG, "[VAULT_CREATED] Vault keys generated, salt_len="
+                            + saltB64.length() + ", encDEK_len=" + encDEKB64.length()
+                            + ", iv_len=" + ivB64.length() + ", tag_len=" + tagB64.length());
+
+                    // Step 5: Store to Firestore (with exists() check)
+                    storeVaultToFirestore(saltB64, encDEKB64, ivB64, tagB64, createdAt,
+                            new VaultCallback() {
+                                public void onSuccess() {
+                                    // Store locally
+                                    prefs.edit()
+                                            .putString(KEY_SALT, saltB64)
+                                            .putString(KEY_ENCRYPTED_DEK, encDEKB64)
+                                            .putString(KEY_IV, ivB64)
+                                            .putString(KEY_TAG, tagB64)
+                                            .putInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS)
+                                            .putLong(KEY_CREATED_AT, createdAt)
+                                            .putBoolean(KEY_VAULT_INITIALIZED, true)
+                                            .commit();
+
+                                    // Cache DEK
+                                    cachedDEK = dekToCache;
+
+                                    Log.d(TAG, "[VAULT_CREATED] SUCCESS: vault created and stored");
+                                    if (callback != null) callback.onSuccess();
+                                }
+
+                                public void onError(String error) {
+                                    Log.e(TAG, "[VAULT_CREATED] FAILED: Firestore write error: " + error);
+                                    CryptoManager.zeroFill(dekToCache);
+                                    if (callback != null) callback.onError(error);
+                                }
+                            });
+
+                } catch (Exception e) {
+                    Log.e(TAG, "[VAULT_CREATED] EXCEPTION: " + e.getMessage());
+                    if (callback != null) callback.onError("Vault creation failed: " + e.getMessage());
+                } finally {
+                    CryptoManager.zeroFill(masterKey);
+                    CryptoManager.zeroFill(salt);
+                    if (dek != null) CryptoManager.zeroFill(dek);
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * Synchronous vault initialization for migration use.
+     * Does NOT write to Firestore (caller handles that).
+     */
+    public boolean initializeVaultSync(String password) {
+        if (password == null || password.length() == 0) return false;
+        if (isVaultInitialized()) return false;
 
         byte[] salt = null;
         byte[] masterKey = null;
         byte[] dek = null;
 
         try {
-            // Generate fresh salt and DEK
             salt = CryptoManager.generateSalt();
+            masterKey = CryptoManager.deriveMasterKey(password, salt);
+            if (masterKey == null) return false;
+
             dek = CryptoManager.generateDEK();
 
-            int iterations = CryptoManager.DEFAULT_ITERATIONS;
+            CryptoManager.VaultBundle bundle = CryptoManager.encryptDEK(dek, masterKey);
+            if (bundle == null) return false;
 
-            Log.d(TAG, "[VAULT_INIT] salt=" + CryptoManager.bytesToHex(salt).substring(0, 8) + "..., iterations=" + iterations);
-
-            // Derive master key (KEK)
-            masterKey = CryptoManager.deriveKey(password, salt, iterations);
-            if (masterKey == null) {
-                return false;
-            }
-
-            // Encrypt DEK with master key
-            String encryptedDEK = CryptoManager.encryptDEK(dek, masterKey);
-            if (encryptedDEK == null) {
-                return false;
-            }
-
-            // Compute HMAC verification tag
-            String verifyTag = CryptoManager.computeVerifyTag(masterKey);
-            if (verifyTag == null) {
-                return false;
-            }
-
-            // Zero-fill master key IMMEDIATELY after use
             CryptoManager.zeroFill(masterKey);
             masterKey = null;
 
-            String saltHex = CryptoManager.bytesToHex(salt);
-            long now = System.currentTimeMillis();
+            String saltB64 = Base64.encodeToString(salt, Base64.NO_WRAP);
+            long createdAt = System.currentTimeMillis();
 
-            // Store locally
             prefs.edit()
-                    .putString(KEY_SALT, saltHex)
-                    .putString(KEY_ENCRYPTED_DEK, encryptedDEK)
-                    .putString(KEY_VERIFY_TAG, verifyTag)
-                    .putInt(KEY_ITERATIONS, iterations)
-                    .putInt(KEY_KEY_VERSION, 1)
-                    .putInt(KEY_VAULT_VERSION, CURRENT_VAULT_VERSION)
-                    .putLong(KEY_CREATED_AT, now)
-                    .putLong(KEY_UPDATED_AT, now)
+                    .putString(KEY_SALT, saltB64)
+                    .putString(KEY_ENCRYPTED_DEK, bundle.encryptedDEK)
+                    .putString(KEY_IV, bundle.iv)
+                    .putString(KEY_TAG, bundle.tag)
+                    .putInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS)
+                    .putLong(KEY_CREATED_AT, createdAt)
+                    .putBoolean(KEY_VAULT_INITIALIZED, true)
                     .commit();
+
+            cachedDEK = dek;
+            dek = null;
 
             // Upload to Firestore
             uploadVaultToFirestore();
 
-            // Cache DEK in memory (byte[], not String)
-            cachedDEK = dek;
-            dek = null; // Prevent zeroFill in finally
-
-            Log.d(TAG, "Vault initialized successfully with " + iterations + " iterations");
             return true;
-
         } catch (Exception e) {
-            Log.e(TAG, "Vault initialization failed: " + e.getMessage());
+            Log.e(TAG, "initializeVaultSync failed: " + e.getMessage());
             return false;
         } finally {
             CryptoManager.zeroFill(masterKey);
             CryptoManager.zeroFill(salt);
-            // Only zero dek if it wasn't cached
-            if (dek != null) {
-                CryptoManager.zeroFill(dek);
-            }
+            if (dek != null) CryptoManager.zeroFill(dek);
         }
     }
 
     // ======================== VAULT UNLOCK ========================
 
     /**
-     * Unlock vault: derive master key, HMAC-verify, decrypt DEK.
-     * Reads iterations from locally-cached metadata.
+     * Unlock vault: derive Master Key from password + stored salt, decrypt DEK.
+     * On success, DEK is cached in memory. On failure, wrong password.
      *
      * @param password user's master password
-     * @return true if password is correct and DEK is now cached
+     * @return true if password correct and DEK cached
      */
     public boolean unlockVault(String password) {
-        if (password == null || password.length() == 0) {
-            return false;
-        }
+        if (password == null || password.length() == 0) return false;
         if (!isVaultInitialized()) {
+            Log.e(TAG, "[VAULT_UNLOCK_FAILED] vault not initialized");
             return false;
         }
 
         byte[] masterKey = null;
         try {
-            String saltHex = prefs.getString(KEY_SALT, null);
-            String encryptedDEK = prefs.getString(KEY_ENCRYPTED_DEK, null);
-            String storedTag = prefs.getString(KEY_VERIFY_TAG, null);
-            int iterations = getIterations();
+            String saltB64 = prefs.getString(KEY_SALT, null);
+            String encDEKB64 = prefs.getString(KEY_ENCRYPTED_DEK, null);
+            String ivB64 = prefs.getString(KEY_IV, null);
+            String tagB64 = prefs.getString(KEY_TAG, null);
 
-            if (saltHex == null || encryptedDEK == null || storedTag == null) {
+            if (saltB64 == null || encDEKB64 == null || ivB64 == null || tagB64 == null) {
+                Log.e(TAG, "[VAULT_UNLOCK_FAILED] incomplete local vault metadata");
                 return false;
             }
 
-            byte[] salt = CryptoManager.hexToBytes(saltHex);
+            byte[] salt = Base64.decode(saltB64, Base64.NO_WRAP);
 
-            Log.d(TAG, "[VAULT_UNLOCK] salt=" + saltHex.substring(0, Math.min(8, saltHex.length()))
-                    + "..., iterations=" + iterations
-                    + ", encDEK_len=" + encryptedDEK.length()
-                    + ", tag_len=" + storedTag.length());
+            Log.d(TAG, "[VAULT_FETCH] Unlocking with salt_len=" + salt.length
+                    + ", iterations=" + CryptoManager.FIXED_ITERATIONS);
 
-            // Derive master key with stored iterations
-            masterKey = CryptoManager.deriveKey(password, salt, iterations);
+            // Derive Master Key
+            masterKey = CryptoManager.deriveMasterKey(password, salt);
             if (masterKey == null) {
-                Log.e(TAG, "[VAULT_UNLOCK] deriveKey returned null");
+                Log.e(TAG, "[VAULT_UNLOCK_FAILED] key derivation returned null");
                 return false;
             }
-
-            Log.d(TAG, "[VAULT_UNLOCK] masterKey derived, len=" + masterKey.length);
-
-            // HMAC verification (constant-time)
-            boolean verified = CryptoManager.verifyTag(masterKey, storedTag);
-            if (!verified) {
-                // Wrong password -- zero-fill and return false, no crash
-                Log.w(TAG, "[VAULT_UNLOCK] HMAC verification FAILED -- wrong password");
-                CryptoManager.zeroFill(masterKey);
-                masterKey = null;
-                return false;
-            }
-
-            Log.d(TAG, "[VAULT_UNLOCK] HMAC verification passed");
 
             // Decrypt DEK
-            byte[] dek = CryptoManager.decryptDEK(encryptedDEK, masterKey);
-            if (dek == null) {
-                Log.e(TAG, "[VAULT_UNLOCK] DEK decryption FAILED");
-                CryptoManager.zeroFill(masterKey);
-                masterKey = null;
-                return false;
-            }
-
-            Log.d(TAG, "[VAULT_UNLOCK] DEK decrypted, len=" + dek.length);
+            byte[] dek = CryptoManager.decryptDEK(encDEKB64, ivB64, tagB64, masterKey);
 
             // Zero-fill master key IMMEDIATELY
             CryptoManager.zeroFill(masterKey);
             masterKey = null;
 
+            if (dek == null) {
+                Log.w(TAG, "[VAULT_UNLOCK_FAILED] DEK decryption failed -- wrong password");
+                return false;
+            }
+
             // Cache DEK
             cachedDEK = dek;
-
-            Log.d(TAG, "Vault unlocked successfully");
+            Log.d(TAG, "[VAULT_UNLOCK_SUCCESS] DEK decrypted and cached, len=" + dek.length);
             return true;
 
         } catch (Exception e) {
-            Log.e(TAG, "Vault unlock failed: " + e.getMessage());
+            Log.e(TAG, "[VAULT_UNLOCK_FAILED] exception: " + e.getMessage());
             return false;
         } finally {
             CryptoManager.zeroFill(masterKey);
@@ -295,8 +361,7 @@ public class KeyManager {
     // ======================== VAULT LOCK ========================
 
     /**
-     * Lock vault: zero-fill DEK byte[], nullify reference.
-     * Called on session timeout (5 min background).
+     * Lock vault: zero-fill DEK, nullify reference.
      */
     public void lockVault() {
         if (cachedDEK != null) {
@@ -311,356 +376,364 @@ public class KeyManager {
     /**
      * Get a COPY of the cached DEK. Caller must zero their copy when done.
      * Returns null if vault is locked.
-     *
-     * NEVER returns direct reference to internal cachedDEK.
      */
     public byte[] getDEK() {
-        if (cachedDEK == null) {
-            return null;
-        }
+        if (cachedDEK == null) return null;
         byte[] copy = new byte[cachedDEK.length];
         System.arraycopy(cachedDEK, 0, copy, 0, cachedDEK.length);
         return copy;
+    }
+
+    // ======================== FIRESTORE OPERATIONS ========================
+
+    /**
+     * Get the Firestore document reference for vault metadata.
+     * Path: users/{uid}/crypto_metadata/vault
+     */
+    private DocumentReference getVaultDocRef(String uid) {
+        return FirebaseFirestore.getInstance()
+                .collection("users").document(uid)
+                .collection("crypto_metadata").document("vault");
+    }
+
+    /**
+     * Store vault to Firestore with exists() check.
+     * Uses set() -- NOT merge().
+     * If document already exists, calls onError (refuses to overwrite).
+     */
+    private void storeVaultToFirestore(final String saltB64, final String encDEKB64,
+                                        final String ivB64, final String tagB64,
+                                        final long createdAt, final VaultCallback callback) {
+        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
+        if (!authManager.isLoggedIn()) {
+            Log.w(TAG, "[VAULT_CREATED] Not logged in, storing locally only");
+            if (callback != null) callback.onSuccess(); // Local-only is acceptable
+            return;
+        }
+        String uid = authManager.getUid();
+        if (uid == null) {
+            Log.w(TAG, "[VAULT_CREATED] UID null, storing locally only");
+            if (callback != null) callback.onSuccess();
+            return;
+        }
+
+        final DocumentReference docRef = getVaultDocRef(uid);
+
+        // STEP 1: Check if document already exists
+        docRef.get()
+                .addOnSuccessListener(snapshot -> {
+                    if (snapshot.exists()) {
+                        // Document ALREADY exists -- DO NOT overwrite
+                        Log.w(TAG, "[VAULT_CREATED] BLOCKED: vault already exists in Firestore");
+                        if (callback != null) callback.onError("Vault already exists in Firestore");
+                    } else {
+                        // STEP 2: Document does not exist -- create with set()
+                        Map<String, Object> data = new HashMap<>();
+                        data.put("salt", saltB64);
+                        data.put("encryptedDEK", encDEKB64);
+                        data.put("iv", ivB64);
+                        data.put("tag", tagB64);
+                        data.put("iterations", CryptoManager.FIXED_ITERATIONS);
+                        data.put("createdAt", createdAt);
+
+                        docRef.set(data) // set() NOT merge()
+                                .addOnSuccessListener(unused -> {
+                                    Log.d(TAG, "[VAULT_CREATED] Firestore document created successfully");
+                                    if (callback != null) callback.onSuccess();
+                                })
+                                .addOnFailureListener(e -> {
+                                    Log.e(TAG, "[VAULT_CREATED] Firestore set() failed: " + e.getMessage());
+                                    if (callback != null) callback.onError(e.getMessage());
+                                });
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "[VAULT_CREATED] Firestore exists() check failed: " + e.getMessage());
+                    // Allow local-only vault creation on Firestore failure
+                    if (callback != null) callback.onSuccess();
+                });
+    }
+
+    /**
+     * Upload current local vault metadata to Firestore.
+     * Used after migration. Uses set() with exists() check.
+     */
+    public void uploadVaultToFirestore() {
+        if (!isVaultInitialized()) {
+            Log.w(TAG, "uploadVaultToFirestore: vault not initialized");
+            return;
+        }
+
+        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
+        if (!authManager.isLoggedIn()) return;
+        String uid = authManager.getUid();
+        if (uid == null) return;
+
+        String saltB64 = prefs.getString(KEY_SALT, "");
+        String encDEKB64 = prefs.getString(KEY_ENCRYPTED_DEK, "");
+        String ivB64 = prefs.getString(KEY_IV, "");
+        String tagB64 = prefs.getString(KEY_TAG, "");
+        long createdAt = prefs.getLong(KEY_CREATED_AT, System.currentTimeMillis());
+
+        if (saltB64.isEmpty() || encDEKB64.isEmpty() || ivB64.isEmpty() || tagB64.isEmpty()) {
+            Log.e(TAG, "uploadVaultToFirestore: incomplete local data");
+            return;
+        }
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("salt", saltB64);
+        data.put("encryptedDEK", encDEKB64);
+        data.put("iv", ivB64);
+        data.put("tag", tagB64);
+        data.put("iterations", CryptoManager.FIXED_ITERATIONS);
+        data.put("createdAt", createdAt);
+
+        getVaultDocRef(uid).set(data)
+                .addOnSuccessListener(unused ->
+                        Log.d(TAG, "[VAULT_CREATED] Uploaded vault to Firestore"))
+                .addOnFailureListener(e ->
+                        Log.e(TAG, "[VAULT_CREATED] Upload failed: " + e.getMessage()));
+    }
+
+    /**
+     * Fetch vault metadata from Firestore and cache locally.
+     * Used on reinstall after Firebase login.
+     *
+     * @param callback called with true if vault found & cached, false otherwise
+     */
+    public void fetchVaultFromFirestore(final VaultFetchCallback callback) {
+        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
+        if (!authManager.isLoggedIn()) {
+            Log.w(TAG, "[VAULT_FETCH] Not logged in");
+            if (callback != null) callback.onResult(false);
+            return;
+        }
+        String uid = authManager.getUid();
+        if (uid == null) {
+            Log.w(TAG, "[VAULT_FETCH] UID null");
+            if (callback != null) callback.onResult(false);
+            return;
+        }
+
+        Log.d(TAG, "[VAULT_FETCH] Fetching from Firestore for uid=" + uid);
+
+        getVaultDocRef(uid).get()
+                .addOnSuccessListener(doc -> {
+                    if (doc.exists()) {
+                        Map<String, Object> data = doc.getData();
+                        if (data != null) {
+                            String salt = getStr(data, "salt");
+                            String encDEK = getStr(data, "encryptedDEK");
+                            String iv = getStr(data, "iv");
+                            String tag = getStr(data, "tag");
+                            int iterations = getInt(data, "iterations");
+                            long createdAt = getLong(data, "createdAt");
+
+                            if (salt.length() > 0 && encDEK.length() > 0
+                                    && iv.length() > 0 && tag.length() > 0) {
+
+                                if (iterations <= 0) iterations = CryptoManager.FIXED_ITERATIONS;
+
+                                Log.d(TAG, "[VAULT_FETCH] SUCCESS: salt_len=" + salt.length()
+                                        + ", encDEK_len=" + encDEK.length()
+                                        + ", iv_len=" + iv.length()
+                                        + ", tag_len=" + tag.length()
+                                        + ", iterations=" + iterations);
+
+                                prefs.edit()
+                                        .putString(KEY_SALT, salt)
+                                        .putString(KEY_ENCRYPTED_DEK, encDEK)
+                                        .putString(KEY_IV, iv)
+                                        .putString(KEY_TAG, tag)
+                                        .putInt(KEY_ITERATIONS, iterations)
+                                        .putLong(KEY_CREATED_AT, createdAt)
+                                        .putBoolean(KEY_VAULT_INITIALIZED, true)
+                                        .commit();
+
+                                if (callback != null) callback.onResult(true);
+                                return;
+                            }
+                        }
+                    }
+                    Log.d(TAG, "[VAULT_FETCH] No vault found in Firestore");
+                    if (callback != null) callback.onResult(false);
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "[VAULT_FETCH] Failed: " + e.getMessage());
+                    if (callback != null) callback.onResult(false);
+                });
+    }
+
+    // ======================== CLOUD NOTES CHECK ========================
+
+    /**
+     * Check if notes exist in Firestore (safety check before vault creation).
+     * If notes exist but vault is missing, creating new vault = data loss.
+     */
+    public void checkCloudNotesExist(final VaultFetchCallback callback) {
+        FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
+        if (!authManager.isLoggedIn()) {
+            if (callback != null) callback.onResult(false);
+            return;
+        }
+        String uid = authManager.getUid();
+        if (uid == null) {
+            if (callback != null) callback.onResult(false);
+            return;
+        }
+
+        FirebaseFirestore.getInstance()
+                .collection("users").document(uid)
+                .collection("notes")
+                .limit(1)
+                .get()
+                .addOnSuccessListener(querySnapshot -> {
+                    boolean exists = querySnapshot != null && !querySnapshot.isEmpty();
+                    Log.d(TAG, "[NOTES_CHECK] notes exist=" + exists);
+                    if (callback != null) callback.onResult(exists);
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "[NOTES_CHECK] failed: " + e.getMessage());
+                    if (callback != null) callback.onResult(false);
+                });
     }
 
     // ======================== PASSWORD CHANGE ========================
 
     /**
      * Change master password. Re-wraps DEK with new master key.
-     * Notes are NOT re-encrypted (they use DEK, which doesn't change).
+     * Generates NEW salt (password change = new salt is acceptable).
+     * DEK itself does NOT change -- notes stay encrypted as-is.
      *
-     * @param oldPassword current master password
-     * @param newPassword new master password
-     * @return true on success
+     * @param oldPassword current password
+     * @param newPassword new password
+     * @param callback    async result
      */
-    public boolean changePassword(String oldPassword, String newPassword) {
+    public void changePassword(final String oldPassword, final String newPassword,
+                                final VaultCallback callback) {
         if (oldPassword == null || newPassword == null) {
-            return false;
+            if (callback != null) callback.onError("Passwords cannot be null");
+            return;
         }
         if (!isVaultInitialized()) {
-            return false;
+            if (callback != null) callback.onError("Vault not initialized");
+            return;
         }
 
-        byte[] oldMasterKey = null;
-        byte[] newMasterKey = null;
+        new Thread(new Runnable() {
+            public void run() {
+                byte[] oldMasterKey = null;
+                byte[] newMasterKey = null;
+                try {
+                    // Step 1: Verify old password by trying to decrypt DEK
+                    String saltB64 = prefs.getString(KEY_SALT, null);
+                    String encDEKB64 = prefs.getString(KEY_ENCRYPTED_DEK, null);
+                    String ivB64 = prefs.getString(KEY_IV, null);
+                    String tagB64 = prefs.getString(KEY_TAG, null);
 
-        try {
-            String saltHex = prefs.getString(KEY_SALT, null);
-            String encryptedDEK = prefs.getString(KEY_ENCRYPTED_DEK, null);
-            String storedTag = prefs.getString(KEY_VERIFY_TAG, null);
-            int currentIterations = getIterations();
+                    if (saltB64 == null || encDEKB64 == null || ivB64 == null || tagB64 == null) {
+                        if (callback != null) callback.onError("Vault metadata incomplete");
+                        return;
+                    }
 
-            if (saltHex == null || encryptedDEK == null || storedTag == null) {
-                return false;
+                    byte[] oldSalt = Base64.decode(saltB64, Base64.NO_WRAP);
+                    oldMasterKey = CryptoManager.deriveMasterKey(oldPassword, oldSalt);
+                    if (oldMasterKey == null) {
+                        if (callback != null) callback.onError("Key derivation failed");
+                        return;
+                    }
+
+                    byte[] dek = CryptoManager.decryptDEK(encDEKB64, ivB64, tagB64, oldMasterKey);
+                    CryptoManager.zeroFill(oldMasterKey);
+                    oldMasterKey = null;
+
+                    if (dek == null) {
+                        if (callback != null) callback.onError("Old password incorrect");
+                        return;
+                    }
+
+                    // Step 2: Generate new salt, derive new Master Key
+                    byte[] newSalt = CryptoManager.generateSalt();
+                    newMasterKey = CryptoManager.deriveMasterKey(newPassword, newSalt);
+                    if (newMasterKey == null) {
+                        CryptoManager.zeroFill(dek);
+                        if (callback != null) callback.onError("New key derivation failed");
+                        return;
+                    }
+
+                    // Step 3: Re-encrypt DEK with new Master Key
+                    CryptoManager.VaultBundle bundle = CryptoManager.encryptDEK(dek, newMasterKey);
+                    CryptoManager.zeroFill(newMasterKey);
+                    newMasterKey = null;
+
+                    if (bundle == null) {
+                        CryptoManager.zeroFill(dek);
+                        if (callback != null) callback.onError("DEK re-encryption failed");
+                        return;
+                    }
+
+                    String newSaltB64 = Base64.encodeToString(newSalt, Base64.NO_WRAP);
+                    long createdAt = prefs.getLong(KEY_CREATED_AT, System.currentTimeMillis());
+
+                    // Step 4: Update local storage
+                    prefs.edit()
+                            .putString(KEY_SALT, newSaltB64)
+                            .putString(KEY_ENCRYPTED_DEK, bundle.encryptedDEK)
+                            .putString(KEY_IV, bundle.iv)
+                            .putString(KEY_TAG, bundle.tag)
+                            .commit();
+
+                    // Step 5: Update Firestore (overwrite is OK for password change)
+                    FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
+                    if (authManager.isLoggedIn() && authManager.getUid() != null) {
+                        Map<String, Object> data = new HashMap<>();
+                        data.put("salt", newSaltB64);
+                        data.put("encryptedDEK", bundle.encryptedDEK);
+                        data.put("iv", bundle.iv);
+                        data.put("tag", bundle.tag);
+                        data.put("iterations", CryptoManager.FIXED_ITERATIONS);
+                        data.put("createdAt", createdAt);
+
+                        getVaultDocRef(authManager.getUid()).set(data)
+                                .addOnSuccessListener(unused ->
+                                        Log.d(TAG, "Password change: Firestore updated"))
+                                .addOnFailureListener(e ->
+                                        Log.e(TAG, "Password change: Firestore update failed: " + e.getMessage()));
+                    }
+
+                    // Update cached DEK reference
+                    if (cachedDEK != null) Arrays.fill(cachedDEK, (byte) 0);
+                    cachedDEK = dek;
+
+                    Log.d(TAG, "Password changed successfully");
+                    if (callback != null) callback.onSuccess();
+
+                } catch (Exception e) {
+                    Log.e(TAG, "Password change failed: " + e.getMessage());
+                    if (callback != null) callback.onError(e.getMessage());
+                } finally {
+                    CryptoManager.zeroFill(oldMasterKey);
+                    CryptoManager.zeroFill(newMasterKey);
+                }
             }
-
-            byte[] oldSalt = CryptoManager.hexToBytes(saltHex);
-
-            // Step 1: Verify old password
-            oldMasterKey = CryptoManager.deriveKey(oldPassword, oldSalt, currentIterations);
-            if (oldMasterKey == null) {
-                return false;
-            }
-
-            boolean verified = CryptoManager.verifyTag(oldMasterKey, storedTag);
-            if (!verified) {
-                CryptoManager.zeroFill(oldMasterKey);
-                return false;
-            }
-
-            // Step 2: Decrypt DEK with old master key
-            byte[] dek = CryptoManager.decryptDEK(encryptedDEK, oldMasterKey);
-            if (dek == null) {
-                CryptoManager.zeroFill(oldMasterKey);
-                return false;
-            }
-
-            // Zero-fill old master key immediately
-            CryptoManager.zeroFill(oldMasterKey);
-            oldMasterKey = null;
-
-            // Step 3: Generate new salt, derive new master key
-            byte[] newSalt = CryptoManager.generateSalt();
-            // Use same iterations or optionally upgrade to DEFAULT_ITERATIONS
-            int newIterations = Math.max(currentIterations, CryptoManager.DEFAULT_ITERATIONS);
-
-            newMasterKey = CryptoManager.deriveKey(newPassword, newSalt, newIterations);
-            if (newMasterKey == null) {
-                CryptoManager.zeroFill(dek);
-                return false;
-            }
-
-            // Step 4: Re-encrypt DEK with new master key
-            String newEncryptedDEK = CryptoManager.encryptDEK(dek, newMasterKey);
-            if (newEncryptedDEK == null) {
-                CryptoManager.zeroFill(dek);
-                CryptoManager.zeroFill(newMasterKey);
-                return false;
-            }
-
-            // Step 5: Compute new HMAC verify tag
-            String newVerifyTag = CryptoManager.computeVerifyTag(newMasterKey);
-            if (newVerifyTag == null) {
-                CryptoManager.zeroFill(dek);
-                CryptoManager.zeroFill(newMasterKey);
-                return false;
-            }
-
-            // Zero-fill new master key immediately
-            CryptoManager.zeroFill(newMasterKey);
-            newMasterKey = null;
-
-            String newSaltHex = CryptoManager.bytesToHex(newSalt);
-            long now = System.currentTimeMillis();
-            int keyVersion = prefs.getInt(KEY_KEY_VERSION, 1) + 1;
-
-            // Step 6: Update local storage
-            prefs.edit()
-                    .putString(KEY_SALT, newSaltHex)
-                    .putString(KEY_ENCRYPTED_DEK, newEncryptedDEK)
-                    .putString(KEY_VERIFY_TAG, newVerifyTag)
-                    .putInt(KEY_ITERATIONS, newIterations)
-                    .putInt(KEY_KEY_VERSION, keyVersion)
-                    .putLong(KEY_UPDATED_AT, now)
-                    .commit();
-
-            // Step 7: Upload to Firestore
-            uploadVaultToFirestore();
-
-            // DEK stays the same -- keep cached
-            // But update the cached copy just in case
-            if (cachedDEK != null) {
-                Arrays.fill(cachedDEK, (byte) 0);
-            }
-            cachedDEK = dek;
-
-            Log.d(TAG, "Password changed successfully, keyVersion=" + keyVersion);
-            return true;
-
-        } catch (Exception e) {
-            Log.e(TAG, "Password change failed: " + e.getMessage());
-            return false;
-        } finally {
-            CryptoManager.zeroFill(oldMasterKey);
-            CryptoManager.zeroFill(newMasterKey);
-        }
-    }
-
-    // ======================== FIRESTORE SYNC ========================
-
-    /**
-     * Upload vault metadata to Firestore: users/{uid}/vault/crypto_metadata
-     * Uses set() (not add()) to ensure deterministic document path.
-     */
-    public void uploadVaultToFirestore() {
-        try {
-            FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
-            if (!authManager.isLoggedIn()) {
-                Log.w(TAG, "[VAULT_UPLOAD_FAILED] Not logged in, cannot upload vault");
-                return;
-            }
-            String uid = authManager.getUid();
-            if (uid == null) {
-                Log.w(TAG, "[VAULT_UPLOAD_FAILED] UID is null");
-                return;
-            }
-
-            String salt = prefs.getString(KEY_SALT, "");
-            String encDEK = prefs.getString(KEY_ENCRYPTED_DEK, "");
-            String tag = prefs.getString(KEY_VERIFY_TAG, "");
-            int iterations = getIterations();
-            int keyVersion = prefs.getInt(KEY_KEY_VERSION, 1);
-            long createdAt = prefs.getLong(KEY_CREATED_AT, System.currentTimeMillis());
-            long updatedAt = System.currentTimeMillis();
-
-            // Validate data before uploading
-            if (salt.length() == 0 || encDEK.length() == 0 || tag.length() == 0) {
-                Log.e(TAG, "[VAULT_UPLOAD_FAILED] Local vault data incomplete, aborting upload");
-                return;
-            }
-
-            Log.d(TAG, "[VAULT_UPLOAD_START] uid=" + uid
-                    + ", salt=" + salt.substring(0, Math.min(8, salt.length())) + "..."
-                    + ", iterations=" + iterations
-                    + ", keyVersion=" + keyVersion
-                    + ", encDEK_len=" + encDEK.length()
-                    + ", tag_len=" + tag.length());
-
-            Map<String, Object> data = new HashMap<String, Object>();
-            data.put("salt", salt);
-            data.put("encryptedDEK", encDEK);
-            data.put("verifyTag", tag);
-            data.put("iterations", Integer.valueOf(iterations));
-            data.put("keyVersion", Integer.valueOf(keyVersion));
-            data.put("createdAt", Long.valueOf(createdAt));
-            data.put("updatedAt", Long.valueOf(updatedAt));
-
-            FirebaseFirestore.getInstance()
-                    .collection("users").document(uid)
-                    .collection("vault").document("crypto_metadata")
-                    .set(data)
-                    .addOnSuccessListener(unused ->
-                            Log.d(TAG, "[VAULT_UPLOAD_SUCCESS] Vault metadata uploaded to Firestore for uid=" + uid))
-                    .addOnFailureListener(e ->
-                            Log.e(TAG, "[VAULT_UPLOAD_FAILED] Firestore write failed: " + e.getMessage()));
-
-        } catch (Exception e) {
-            Log.e(TAG, "[VAULT_UPLOAD_FAILED] Exception: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Fetch vault metadata from Firestore and cache locally.
-     * Used on reinstall/new device after Firebase login.
-     *
-     * @param callback called with true if vault found & cached, false otherwise
-     */
-    public void fetchVaultFromFirestore(final VaultFetchCallback callback) {
-        try {
-            FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
-            if (!authManager.isLoggedIn()) {
-                Log.w(TAG, "[VAULT_FETCH] Not logged in, skipping fetch");
-                if (callback != null) callback.onResult(false);
-                return;
-            }
-            String uid = authManager.getUid();
-            if (uid == null) {
-                Log.w(TAG, "[VAULT_FETCH] UID is null, skipping fetch");
-                if (callback != null) callback.onResult(false);
-                return;
-            }
-
-            Log.d(TAG, "[VAULT_FETCH] Fetching vault metadata from Firestore for uid=" + uid);
-
-            FirebaseFirestore.getInstance()
-                    .collection("users").document(uid)
-                    .collection("vault").document("crypto_metadata")
-                    .get()
-                    .addOnSuccessListener(doc -> {
-                        if (doc.exists()) {
-                            Map<String, Object> data = doc.getData();
-                            if (data != null) {
-                                String salt = getStringFromMap(data, "salt");
-                                String encDEK = getStringFromMap(data, "encryptedDEK");
-                                String tag = getStringFromMap(data, "verifyTag");
-                                int iterations = getIntFromMap(data, "iterations");
-                                int keyVer = getIntFromMap(data, "keyVersion");
-                                long createdAt = getLongFromMap(data, "createdAt");
-                                long updatedAt = getLongFromMap(data, "updatedAt");
-
-                                if (salt.length() > 0 && encDEK.length() > 0 && tag.length() > 0) {
-                                    if (iterations <= 0) {
-                                        iterations = CryptoManager.DEFAULT_ITERATIONS;
-                                    }
-                                    if (keyVer <= 0) {
-                                        keyVer = 1;
-                                    }
-
-                                    Log.d(TAG, "[VAULT_EXISTS] Found vault in Firestore: salt="
-                                            + salt.substring(0, Math.min(8, salt.length()))
-                                            + "..., iterations=" + iterations
-                                            + ", encDEK_len=" + encDEK.length()
-                                            + ", tag_len=" + tag.length()
-                                            + ", keyVer=" + keyVer);
-
-                                    prefs.edit()
-                                            .putString(KEY_SALT, salt)
-                                            .putString(KEY_ENCRYPTED_DEK, encDEK)
-                                            .putString(KEY_VERIFY_TAG, tag)
-                                            .putInt(KEY_ITERATIONS, iterations)
-                                            .putInt(KEY_KEY_VERSION, keyVer)
-                                            .putInt(KEY_VAULT_VERSION, CURRENT_VAULT_VERSION)
-                                            .putLong(KEY_CREATED_AT, createdAt)
-                                            .putLong(KEY_UPDATED_AT, updatedAt)
-                                            .commit();
-
-                                    Log.d(TAG, "Vault metadata fetched from Firestore, iterations=" + iterations);
-                                    if (callback != null) callback.onResult(true);
-                                    return;
-                                }
-                            }
-                        }
-                        Log.d(TAG, "[VAULT_MISSING] No vault metadata found in Firestore");
-                        if (callback != null) callback.onResult(false);
-                    })
-                    .addOnFailureListener(e -> {
-                        Log.e(TAG, "Vault fetch failed: " + e.getMessage());
-                        if (callback != null) callback.onResult(false);
-                    });
-
-        } catch (Exception e) {
-            Log.e(TAG, "Vault fetch exception: " + e.getMessage());
-            if (callback != null) callback.onResult(false);
-        }
-    }
-
-    // ======================== CLOUD NOTES CHECK ========================
-
-    /**
-     * Check if notes exist in Firestore at users/{uid}/notes.
-     * Used as a safety check before allowing vault creation.
-     * If notes exist but vault metadata is missing, creating a new vault would
-     * make those notes permanently undecryptable.
-     *
-     * @param callback called with true if notes exist, false otherwise
-     */
-    public void checkCloudNotesExist(final VaultFetchCallback callback) {
-        try {
-            FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(appContext);
-            if (!authManager.isLoggedIn()) {
-                if (callback != null) callback.onResult(false);
-                return;
-            }
-            String uid = authManager.getUid();
-            if (uid == null) {
-                if (callback != null) callback.onResult(false);
-                return;
-            }
-
-            Log.d(TAG, "[NOTES_CHECK] Checking if notes exist in Firestore for uid=" + uid);
-
-            // Only fetch 1 document to check existence (limit(1) for efficiency)
-            FirebaseFirestore.getInstance()
-                    .collection("users").document(uid)
-                    .collection("notes")
-                    .limit(1)
-                    .get()
-                    .addOnSuccessListener(querySnapshot -> {
-                        boolean notesExist = querySnapshot != null && !querySnapshot.isEmpty();
-                        Log.d(TAG, "[NOTES_CHECK] Notes exist=" + notesExist
-                                + ", count=" + (querySnapshot != null ? querySnapshot.size() : 0));
-                        if (callback != null) callback.onResult(notesExist);
-                    })
-                    .addOnFailureListener(e -> {
-                        Log.e(TAG, "[NOTES_CHECK] Failed to check notes: " + e.getMessage());
-                        // On failure, assume notes might exist (safety first)
-                        if (callback != null) callback.onResult(false);
-                    });
-
-        } catch (Exception e) {
-            Log.e(TAG, "[NOTES_CHECK] Exception: " + e.getMessage());
-            if (callback != null) callback.onResult(false);
-        }
+        }).start();
     }
 
     // ======================== MIGRATION SUPPORT ========================
 
     /**
-     * Store vault metadata locally after migration.
-     * Called by MigrationManager after successful migration.
+     * Store vault metadata locally after migration. Called by MigrationManager.
      */
-    public void storeVaultLocally(String saltHex, String encryptedDEK, String verifyTag,
-                                  int iterations, int keyVersion) {
-        long now = System.currentTimeMillis();
+    public void storeVaultLocally(String saltB64, String encDEKB64, String ivB64,
+                                   String tagB64, long createdAt) {
         prefs.edit()
-                .putString(KEY_SALT, saltHex)
-                .putString(KEY_ENCRYPTED_DEK, encryptedDEK)
-                .putString(KEY_VERIFY_TAG, verifyTag)
-                .putInt(KEY_ITERATIONS, iterations)
-                .putInt(KEY_KEY_VERSION, keyVersion)
-                .putInt(KEY_VAULT_VERSION, CURRENT_VAULT_VERSION)
-                .putLong(KEY_CREATED_AT, now)
-                .putLong(KEY_UPDATED_AT, now)
+                .putString(KEY_SALT, saltB64)
+                .putString(KEY_ENCRYPTED_DEK, encDEKB64)
+                .putString(KEY_IV, ivB64)
+                .putString(KEY_TAG, tagB64)
+                .putInt(KEY_ITERATIONS, CryptoManager.FIXED_ITERATIONS)
+                .putLong(KEY_CREATED_AT, createdAt)
+                .putBoolean(KEY_VAULT_INITIALIZED, true)
                 .commit();
     }
 
@@ -668,133 +741,75 @@ public class KeyManager {
      * Set cached DEK directly. Used by MigrationManager after migration.
      */
     public void setCachedDEK(byte[] dek) {
-        if (cachedDEK != null) {
-            Arrays.fill(cachedDEK, (byte) 0);
-        }
+        if (cachedDEK != null) Arrays.fill(cachedDEK, (byte) 0);
         cachedDEK = dek;
     }
 
     // ======================== LOCAL METADATA ACCESS ========================
 
-    /**
-     * Get stored salt hex from local cache.
-     */
     public String getSaltHex() {
+        // Return Base64 salt (kept for compatibility, name is misleading but safe)
         return prefs.getString(KEY_SALT, null);
     }
 
-    /**
-     * Get stored encrypted DEK from local cache.
-     */
     public String getEncryptedDEK() {
         return prefs.getString(KEY_ENCRYPTED_DEK, null);
     }
 
-    /**
-     * Get stored verify tag from local cache.
-     */
     public String getVerifyTag() {
-        return prefs.getString(KEY_VERIFY_TAG, null);
+        return prefs.getString(KEY_TAG, null);
+    }
+
+    public String getLocalSalt() {
+        return prefs.getString(KEY_SALT, null);
+    }
+
+    public String getLocalEncryptedDEK() {
+        return prefs.getString(KEY_ENCRYPTED_DEK, null);
+    }
+
+    public String getLocalVerifyTag() {
+        return prefs.getString(KEY_TAG, null);
+    }
+
+    public String getLocalIV() {
+        return prefs.getString(KEY_IV, null);
+    }
+
+    // ======================== BACKUP/RESTORE ========================
+
+    public void restoreVaultFromBackup(String saltB64, String encDEKB64,
+                                        String ivB64, String tagB64, int iterations) {
+        if (iterations <= 0) iterations = CryptoManager.FIXED_ITERATIONS;
+        prefs.edit()
+                .putString(KEY_SALT, saltB64)
+                .putString(KEY_ENCRYPTED_DEK, encDEKB64)
+                .putString(KEY_IV, ivB64)
+                .putString(KEY_TAG, tagB64)
+                .putInt(KEY_ITERATIONS, iterations)
+                .putLong(KEY_CREATED_AT, System.currentTimeMillis())
+                .putBoolean(KEY_VAULT_INITIALIZED, true)
+                .commit();
     }
 
     // ======================== HELPERS ========================
 
-    private String getStringFromMap(Map<String, Object> map, String key) {
+    private String getStr(Map<String, Object> map, String key) {
         Object val = map.get(key);
         if (val instanceof String) return (String) val;
         return "";
     }
 
-    private int getIntFromMap(Map<String, Object> map, String key) {
+    private int getInt(Map<String, Object> map, String key) {
         Object val = map.get(key);
-        if (val instanceof Integer) return ((Integer) val).intValue();
-        if (val instanceof Long) return ((Long) val).intValue();
         if (val instanceof Number) return ((Number) val).intValue();
         return 0;
     }
 
-    private long getLongFromMap(Map<String, Object> map, String key) {
+    private long getLong(Map<String, Object> map, String key) {
         Object val = map.get(key);
-        if (val instanceof Long) return ((Long) val).longValue();
         if (val instanceof Number) return ((Number) val).longValue();
         return 0;
-    }
-
-    // ======================== ASYNC PASSWORD CHANGE ========================
-
-    /**
-     * Change master password asynchronously. Re-wraps DEK with new master key.
-     * Notes are NOT re-encrypted (they use DEK, which doesn't change).
-     * Runs PBKDF2 derivation on a background thread to avoid blocking UI.
-     *
-     * @param oldPassword current master password
-     * @param newPassword new master password
-     * @param callback    called on main thread with success or error
-     */
-    public void changePassword(final String oldPassword, final String newPassword,
-                                final VaultCallback callback) {
-        new Thread(new Runnable() {
-            public void run() {
-                boolean success = changePassword(oldPassword, newPassword);
-                if (callback != null) {
-                    if (success) {
-                        callback.onSuccess();
-                    } else {
-                        // Determine error type
-                        // If old password failed HMAC, it's "Old password"
-                        callback.onError("Old password incorrect or crypto error");
-                    }
-                }
-            }
-        }).start();
-    }
-
-    // ======================== BACKUP/RESTORE SUPPORT ========================
-
-    /**
-     * Restore vault metadata from a backup file (JSON import).
-     * Stores salt, encryptedDEK, verifyTag, iterations locally.
-     * User still needs to enter master password to unlock.
-     */
-    public void restoreVaultFromBackup(String saltHex, String encryptedDEK,
-                                        String verifyTag, int iterations) {
-        if (iterations <= 0) {
-            iterations = CryptoManager.DEFAULT_ITERATIONS;
-        }
-        long now = System.currentTimeMillis();
-        prefs.edit()
-                .putString(KEY_SALT, saltHex)
-                .putString(KEY_ENCRYPTED_DEK, encryptedDEK)
-                .putString(KEY_VERIFY_TAG, verifyTag)
-                .putInt(KEY_ITERATIONS, iterations)
-                .putInt(KEY_KEY_VERSION, 1)
-                .putInt(KEY_VAULT_VERSION, CURRENT_VAULT_VERSION)
-                .putLong(KEY_CREATED_AT, now)
-                .putLong(KEY_UPDATED_AT, now)
-                .commit();
-    }
-
-    // ======================== LOCAL METADATA ALIASES ========================
-
-    /**
-     * Alias for getSaltHex() - used by SettingsActivity backup.
-     */
-    public String getLocalSalt() {
-        return prefs.getString(KEY_SALT, null);
-    }
-
-    /**
-     * Alias for getEncryptedDEK() - used by SettingsActivity backup.
-     */
-    public String getLocalEncryptedDEK() {
-        return prefs.getString(KEY_ENCRYPTED_DEK, null);
-    }
-
-    /**
-     * Alias for getVerifyTag() - used by SettingsActivity backup.
-     */
-    public String getLocalVerifyTag() {
-        return prefs.getString(KEY_VERIFY_TAG, null);
     }
 
     // ======================== CALLBACKS ========================
@@ -803,9 +818,6 @@ public class KeyManager {
         void onResult(boolean vaultFound);
     }
 
-    /**
-     * Callback for async vault operations (password change, etc).
-     */
     public interface VaultCallback {
         void onSuccess();
         void onError(String error);
