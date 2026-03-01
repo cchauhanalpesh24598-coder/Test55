@@ -427,4 +427,10 @@
     <string name="legacy_recovery_success">Notes migrated successfully to new encryption system!</string>
     <string name="legacy_recovery_wrong_password">Incorrect master password. Please try again with your original password.</string>
     <string name="legacy_recovery_migration_failed">Migration failed. Your original notes are preserved.</string>
+
+    <!-- Vault Network Error (FIX v2.2) -->
+    <string name="vault_network_error_title">Internet Required</string>
+    <string name="vault_network_error_subtitle">Cannot verify your encryption vault without an internet connection.</string>
+    <string name="vault_network_error_detail">Your encryption keys are stored in the cloud. Please connect to the internet so we can fetch them. Do NOT create a new vault without internet -- this would make your old notes unreadable.</string>
+    <string name="vault_network_error_retry">Retry Connection</string>
 </resources>
