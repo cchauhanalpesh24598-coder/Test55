@@ -7,7 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper;
 public class NotesDatabaseHelper extends SQLiteOpenHelper {
 
     private static final String DATABASE_NAME = "mknotes.db";
-    private static final int DATABASE_VERSION = 16;
+    private static final int DATABASE_VERSION = 17;
 
     public static final String TABLE_NOTES = "notes";
     public static final String TABLE_CATEGORIES = "categories";
@@ -159,6 +159,9 @@ public class NotesDatabaseHelper extends SQLiteOpenHelper {
                     COL_TRASH_LINKED_NOTE_IDS + " TEXT DEFAULT ''" +
                     ");";
 
+    public static final String COL_MANTRA_CLOUD_ID = "cloud_id";
+    public static final String COL_SESSION_CLOUD_ID = "cloud_id";
+
     private static final String CREATE_MANTRAS_TABLE =
             "CREATE TABLE " + TABLE_MANTRAS + " (" +
                     COL_MANTRA_ID + " INTEGER PRIMARY KEY AUTOINCREMENT, " +
@@ -171,7 +174,8 @@ public class NotesDatabaseHelper extends SQLiteOpenHelper {
                     COL_MANTRA_SPEED + " REAL DEFAULT 1.0, " +
                     COL_MANTRA_IS_DELETED + " INTEGER DEFAULT 0, " +
                     COL_MANTRA_RAW_RES_ID + " INTEGER DEFAULT 0, " +
-                    COL_MANTRA_BUILT_IN + " INTEGER DEFAULT 0" +
+                    COL_MANTRA_BUILT_IN + " INTEGER DEFAULT 0, " +
+                    COL_MANTRA_CLOUD_ID + " TEXT" +
                     ");";
 
     private static final String CREATE_MANTRA_HISTORY_TABLE =
@@ -188,7 +192,8 @@ public class NotesDatabaseHelper extends SQLiteOpenHelper {
                     COL_SESSION_MANTRA_ID + " INTEGER, " +
                     COL_SESSION_DATE + " TEXT NOT NULL, " +
                     COL_SESSION_COUNT + " INTEGER DEFAULT 0, " +
-                    COL_SESSION_SPEED + " REAL DEFAULT 1.0" +
+                    COL_SESSION_SPEED + " REAL DEFAULT 1.0, " +
+                    COL_SESSION_CLOUD_ID + " TEXT" +
                     ");";
 
     private static final String CREATE_MANTRA_COUNT_LOG_TABLE =
@@ -366,6 +371,20 @@ public class NotesDatabaseHelper extends SQLiteOpenHelper {
             try {
                 db.execSQL("ALTER TABLE " + TABLE_NOTES + " ADD COLUMN " +
                         COL_SYNC_STATUS + " INTEGER DEFAULT 1");
+            } catch (Exception e) {
+                // Column may already exist
+            }
+        }
+        if (oldVersion < 17) {
+            try {
+                db.execSQL("ALTER TABLE " + TABLE_MANTRAS + " ADD COLUMN " +
+                        COL_MANTRA_CLOUD_ID + " TEXT");
+            } catch (Exception e) {
+                // Column may already exist
+            }
+            try {
+                db.execSQL("ALTER TABLE " + TABLE_DAILY_SESSIONS + " ADD COLUMN " +
+                        COL_SESSION_CLOUD_ID + " TEXT");
             } catch (Exception e) {
                 // Column may already exist
             }
