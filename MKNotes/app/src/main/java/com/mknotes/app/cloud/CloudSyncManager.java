@@ -635,6 +635,10 @@ public class CloudSyncManager {
     /**
      * Convert a raw Note to a Firestore document map.
      * All encrypted fields are uploaded AS-IS (no decryption).
+     *
+     * CRITICAL FIX: Also syncs categoryName so that after reinstall,
+     * the category can be re-created from its name. categoryId is a local
+     * auto-increment ID that is meaningless after reinstall.
      */
     private Map<String, Object> noteToMap(Note note) {
         Map<String, Object> map = new HashMap<String, Object>();
@@ -660,12 +664,35 @@ public class CloudSyncManager {
         map.put("isRoutineMode", Boolean.valueOf(note.isRoutineMode()));
         map.put("archived", Boolean.valueOf(note.isArchived()));
         map.put("cloudId", note.getCloudId() != null ? note.getCloudId() : "");
+
+        // CRITICAL FIX: Sync category name for reinstall recovery
+        // categoryId is a local-only auto-increment that is lost on reinstall.
+        // By storing the category name, we can re-create the category after reinstall.
+        String categoryName = "";
+        if (note.getCategoryId() > 0) {
+            try {
+                NotesRepository repo = NotesRepository.getInstance(appContext);
+                com.mknotes.app.model.Category cat = repo.getCategoryById(note.getCategoryId());
+                if (cat != null && cat.getName() != null) {
+                    categoryName = cat.getName();
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to resolve category name for sync: " + e.getMessage());
+            }
+        }
+        map.put("categoryName", categoryName);
+
         return map;
     }
 
     /**
      * Convert a Firestore document map back to a Note with raw encrypted data.
      * Used when downloading from cloud.
+     *
+     * CRITICAL FIX: Resolves categoryName to local categoryId.
+     * After reinstall, the old categoryId is meaningless (local auto-increment).
+     * If categoryName is present in Firestore, we find or create the matching
+     * local category and assign the correct local ID.
      */
     private Note mapToNote(Map<String, Object> data, String cloudId) {
         Note note = new Note();
@@ -680,7 +707,6 @@ public class CloudSyncManager {
         note.setFavorite(getBoolFromMap(data, "favorite"));
         note.setLocked(getBoolFromMap(data, "locked"));
         note.setPassword(getStringFromMap(data, "password"));
-        note.setCategoryId(getLongFromMap(data, "categoryId"));
         note.setHasChecklist(getBoolFromMap(data, "hasChecklist"));
         note.setHasImage(getBoolFromMap(data, "hasImage"));
         note.setChecklistMode(getBoolFromMap(data, "isChecklistMode"));
@@ -690,7 +716,51 @@ public class CloudSyncManager {
         note.setLinkedNoteIds(getStringFromMap(data, "linkedNoteIds"));
         note.setRoutineMode(getBoolFromMap(data, "isRoutineMode"));
         note.setArchived(getBoolFromMap(data, "archived"));
+
+        // CRITICAL FIX: Resolve category by name, not by stale local ID
+        long cloudCategoryId = getLongFromMap(data, "categoryId");
+        String categoryName = getStringFromMap(data, "categoryName");
+
+        if (categoryName != null && categoryName.length() > 0) {
+            // Find or create local category by name
+            long localCatId = resolveOrCreateCategory(categoryName);
+            note.setCategoryId(localCatId);
+        } else {
+            // Fallback: use cloud categoryId as-is (may not match local)
+            note.setCategoryId(cloudCategoryId);
+        }
+
         return note;
+    }
+
+    /**
+     * Find a local category by name, or create it if it doesn't exist.
+     * Returns the local category ID.
+     */
+    private long resolveOrCreateCategory(String categoryName) {
+        if (categoryName == null || categoryName.length() == 0) return -1;
+
+        try {
+            NotesRepository repo = NotesRepository.getInstance(appContext);
+            java.util.List allCats = repo.getAllCategories();
+            for (int i = 0; i < allCats.size(); i++) {
+                com.mknotes.app.model.Category cat = (com.mknotes.app.model.Category) allCats.get(i);
+                if (categoryName.equals(cat.getName())) {
+                    return cat.getId();
+                }
+            }
+            // Category doesn't exist locally -- create it
+            com.mknotes.app.model.Category newCat = new com.mknotes.app.model.Category();
+            newCat.setName(categoryName);
+            newCat.setColor(0);
+            newCat.setSortOrder(allCats.size());
+            long newId = repo.insertCategory(newCat);
+            Log.d(TAG, "Created missing category '" + categoryName + "' with local id=" + newId);
+            return newId;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to resolve category: " + e.getMessage());
+            return -1;
+        }
     }
 
     // ======================== MAP HELPERS ========================
