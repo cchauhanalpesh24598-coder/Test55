@@ -1,7 +1,5 @@
-plugins {
-    id 'com.android.application'
-    id 'com.google.gms.google-services'
-}
+apply plugin: 'com.android.application'
+apply plugin: 'com.google.gms.google-services'
 
 android {
     compileSdk 34
@@ -15,8 +13,10 @@ android {
         versionName "1.0"
         multiDexEnabled true
     }
+
     buildFeatures {
         buildConfig true
+    }
 
     buildTypes {
         release {
@@ -47,7 +47,6 @@ android {
 }
 
 dependencies {
-    // Firebase BOM - latest stable
     implementation platform('com.google.firebase:firebase-bom:33.7.0')
     implementation 'com.google.firebase:firebase-auth'
     implementation 'com.google.firebase:firebase-firestore'
@@ -55,7 +54,6 @@ dependencies {
     implementation 'com.google.firebase:firebase-appcheck-debug'
     implementation 'com.google.firebase:firebase-storage'
 
-    // AndroidX
     implementation 'androidx.core:core:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
