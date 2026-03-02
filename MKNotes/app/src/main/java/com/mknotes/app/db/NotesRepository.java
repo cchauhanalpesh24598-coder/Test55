@@ -9,7 +9,6 @@ import com.mknotes.app.crypto.CryptoManager;
 import com.mknotes.app.model.Category;
 import com.mknotes.app.model.Mantra;
 import com.mknotes.app.model.Note;
-import com.mknotes.app.util.SessionManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -38,21 +37,18 @@ public class NotesRepository {
     /**
      * Get the current encryption key.
      *
-     * CRITICAL FIX: First tries SessionManager (session-aware).
-     * If that returns null (session expired), falls back to direct KeyManager
-     * access. This prevents the race condition where session validation fails
-     * transiently but the DEK is still in memory and valid.
+     * CRITICAL FIX v3: Get DEK directly from KeyManager, bypassing SessionManager.
+     * Session timeout is a UI-level concern (lock screen redirect).
+     * At the data layer, if the vault is unlocked (DEK in memory), the key
+     * must ALWAYS be available for encrypt/decrypt operations.
      *
-     * The vault is locked explicitly by clearSession() or the lock screen,
-     * NOT by a failed session check in a getter.
+     * Previous bug: getKey() went through SessionManager.getCachedKey() which
+     * checked isSessionValid(). After reinstall, the session timestamp wasn't
+     * flushed yet when MainActivity loaded notes, causing null key and
+     * [DECRYPTION_FAILED] for all notes on first launch.
      */
     private byte[] getKey() {
-        byte[] key = SessionManager.getInstance(appContext).getCachedKey();
-        if (key == null) {
-            // Safety fallback: get DEK directly if vault is unlocked
-            key = com.mknotes.app.crypto.KeyManager.getInstance(appContext).getDEK();
-        }
-        return key;
+        return com.mknotes.app.crypto.KeyManager.getInstance(appContext).getDEK();
     }
 
     /**
@@ -87,26 +83,18 @@ public class NotesRepository {
      * On failure: returns "[Decryption Failed]" marker so UI shows proper error.
      * NEVER returns raw encrypted hex to UI.
      *
-     * CRITICAL FIX: If key is null but data looks encrypted, we attempt to
-     * get the key directly from KeyManager as a safety net, bypassing the
-     * session check. This handles edge cases where session timing might
-     * briefly report invalid while DEK is still in memory.
+     * CRITICAL FIX v3: Simplified -- getKey() already goes directly to KeyManager.
+     * No need for redundant fallback. If key is null, vault is locked.
      */
     private String decryptField(String ciphertext, byte[] key) {
         if (ciphertext == null || ciphertext.length() == 0) {
             return "";
         }
 
-        // If key is null, try to get it directly from KeyManager as safety net
         if (key == null) {
-            com.mknotes.app.crypto.KeyManager km = com.mknotes.app.crypto.KeyManager.getInstance(appContext);
-            key = km.getDEK();
-        }
-
-        if (key == null) {
-            // Still no key -- if data looks encrypted, show failure marker
+            // Vault is locked -- if data looks encrypted, show failure marker
             if (CryptoManager.isEncrypted(ciphertext)) {
-                android.util.Log.w("NotesRepository", "[DECRYPT] Key unavailable, encrypted data cannot be shown");
+                android.util.Log.w("NotesRepository", "[DECRYPT] Key unavailable (vault locked), encrypted data cannot be shown");
                 return CryptoManager.DECRYPT_FAILED_MARKER;
             }
             return ciphertext;
