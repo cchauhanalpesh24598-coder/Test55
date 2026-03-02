@@ -36,28 +36,49 @@ public class NotesRepository {
     }
 
     /**
-     * Get the current encryption key from SessionManager.
-     * Returns null if no key is available (session expired).
+     * Get the current encryption key.
+     *
+     * CRITICAL FIX: First tries SessionManager (session-aware).
+     * If that returns null (session expired), falls back to direct KeyManager
+     * access. This prevents the race condition where session validation fails
+     * transiently but the DEK is still in memory and valid.
+     *
+     * The vault is locked explicitly by clearSession() or the lock screen,
+     * NOT by a failed session check in a getter.
      */
     private byte[] getKey() {
-        return SessionManager.getInstance(appContext).getCachedKey();
+        byte[] key = SessionManager.getInstance(appContext).getCachedKey();
+        if (key == null) {
+            // Safety fallback: get DEK directly if vault is unlocked
+            key = com.mknotes.app.crypto.KeyManager.getInstance(appContext).getDEK();
+        }
+        return key;
     }
 
     /**
      * Encrypt a string field using the current key.
      * Uses new CryptoManager (2-layer DEK system).
      * Returns encrypted string or empty string if input is null/empty.
-     * Returns original value if no key is available (graceful fallback).
+     *
+     * CRITICAL FIX: If key is null, throws IllegalStateException instead of
+     * silently saving plaintext. This prevents unencrypted data from being
+     * written to the database when the vault is locked or DEK not ready.
+     * Callers must ensure vault is unlocked before any write operation.
      */
     private String encryptField(String plaintext, byte[] key) {
         if (plaintext == null || plaintext.length() == 0) {
             return "";
         }
         if (key == null) {
-            return plaintext;
+            android.util.Log.e("NotesRepository", "[ENCRYPT_BLOCKED] Key is null, refusing to save plaintext");
+            throw new IllegalStateException("Encryption key not available. Vault must be unlocked before writing notes.");
         }
         String encrypted = CryptoManager.encrypt(plaintext, key);
-        return encrypted != null ? encrypted : plaintext;
+        if (encrypted == null) {
+            android.util.Log.e("NotesRepository", "[ENCRYPT_FAILED] CryptoManager.encrypt returned null");
+            throw new IllegalStateException("Encryption failed for field data.");
+        }
+        return encrypted;
     }
 
     /**
@@ -65,14 +86,27 @@ public class NotesRepository {
      * Uses new CryptoManager (2-layer DEK system).
      * On failure: returns "[Decryption Failed]" marker so UI shows proper error.
      * NEVER returns raw encrypted hex to UI.
+     *
+     * CRITICAL FIX: If key is null but data looks encrypted, we attempt to
+     * get the key directly from KeyManager as a safety net, bypassing the
+     * session check. This handles edge cases where session timing might
+     * briefly report invalid while DEK is still in memory.
      */
     private String decryptField(String ciphertext, byte[] key) {
         if (ciphertext == null || ciphertext.length() == 0) {
             return "";
         }
+
+        // If key is null, try to get it directly from KeyManager as safety net
         if (key == null) {
-            // No key -- if data looks encrypted, show failure marker
+            com.mknotes.app.crypto.KeyManager km = com.mknotes.app.crypto.KeyManager.getInstance(appContext);
+            key = km.getDEK();
+        }
+
+        if (key == null) {
+            // Still no key -- if data looks encrypted, show failure marker
             if (CryptoManager.isEncrypted(ciphertext)) {
+                android.util.Log.w("NotesRepository", "[DECRYPT] Key unavailable, encrypted data cannot be shown");
                 return CryptoManager.DECRYPT_FAILED_MARKER;
             }
             return ciphertext;
@@ -80,6 +114,7 @@ public class NotesRepository {
         String decrypted = CryptoManager.decrypt(ciphertext, key);
         if (decrypted == null) {
             // Decryption failed (wrong key / corrupted) -- show failure marker
+            android.util.Log.w("NotesRepository", "[DECRYPT] Decryption returned null for encrypted data");
             return CryptoManager.DECRYPT_FAILED_MARKER;
         }
         return decrypted;
@@ -1580,13 +1615,22 @@ public class NotesRepository {
 
     /**
      * Encrypt with a specific key (used during migration/re-encryption).
+     * CRITICAL FIX: Never falls back to plaintext on encryption failure.
      */
     private String encryptFieldWithKey(String plaintext, byte[] key) {
         if (plaintext == null || plaintext.length() == 0) {
             return "";
         }
+        if (key == null) {
+            android.util.Log.e("NotesRepository", "[ENCRYPT_WITH_KEY] Key is null");
+            throw new IllegalStateException("Cannot encrypt: key is null");
+        }
         String encrypted = CryptoManager.encrypt(plaintext, key);
-        return encrypted != null ? encrypted : plaintext;
+        if (encrypted == null) {
+            android.util.Log.e("NotesRepository", "[ENCRYPT_WITH_KEY] Encryption returned null");
+            throw new IllegalStateException("Encryption failed");
+        }
+        return encrypted;
     }
 
     /**
