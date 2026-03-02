@@ -147,13 +147,16 @@ public class SessionManager {
      * Get the cached DEK for encryption/decryption.
      * Delegates to KeyManager.getDEK() which returns a COPY.
      * Returns null if session has expired or vault is locked.
+     *
+     * CRITICAL FIX: Removed aggressive lockVault() call on session expiry.
+     * Previously, if isSessionValid() returned false for ANY reason (even a
+     * transient timing issue), the DEK was zeroed permanently, causing all
+     * subsequent decrypt attempts to fail with [DECRYPTION_FAILED].
+     * Now, session expiry only returns null -- the vault is locked explicitly
+     * by clearSession() or by the lock screen, not by a read-path getter.
      */
     public byte[] getCachedKey() {
         if (!isSessionValid()) {
-            KeyManager km = KeyManager.getInstance(appContext);
-            if (km.isVaultUnlocked()) {
-                km.lockVault();
-            }
             return null;
         }
         return KeyManager.getInstance(appContext).getDEK();
