@@ -204,6 +204,14 @@ public class MeditationPlayerManager {
                     // Also save to mantra_history for permanent record
                     repo.saveMantraHistory(currentMantraId, currentSessionDate, newCount);
 
+                    // Sync daily session to cloud after count update
+                    try {
+                        com.mknotes.app.cloud.CloudSyncManager.getInstance(context)
+                                .uploadDailySession(currentMantraId, currentSessionDate);
+                    } catch (Exception e) {
+                        // Cloud sync failure must not crash playback
+                    }
+
                     // Broadcast count update for UI and widget
                     broadcastCountUpdate(currentMantraId, newCount, currentSessionDate);
 
