@@ -1636,6 +1636,116 @@ public class NotesRepository {
         });
     }
 
+    // ============ MANTRA CLOUD SYNC HELPERS ============
+
+    /**
+     * Get the cloud_id for a mantra.
+     */
+    public String getMantraCloudId(long mantraId) {
+        SQLiteDatabase db = dbHelper.getReadableDatabase();
+        Cursor cursor = db.query(NotesDatabaseHelper.TABLE_MANTRAS,
+                new String[]{NotesDatabaseHelper.COL_MANTRA_CLOUD_ID},
+                NotesDatabaseHelper.COL_MANTRA_ID + "=?",
+                new String[]{String.valueOf(mantraId)},
+                null, null, null);
+        String cloudId = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            int idx = cursor.getColumnIndex(NotesDatabaseHelper.COL_MANTRA_CLOUD_ID);
+            if (idx >= 0) {
+                cloudId = cursor.getString(idx);
+            }
+            cursor.close();
+        } else {
+            if (cursor != null) cursor.close();
+        }
+        return cloudId;
+    }
+
+    /**
+     * Set the cloud_id for a mantra.
+     */
+    public void setMantraCloudId(long mantraId, String cloudId) {
+        SQLiteDatabase db = dbHelper.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(NotesDatabaseHelper.COL_MANTRA_CLOUD_ID, cloudId);
+        db.update(NotesDatabaseHelper.TABLE_MANTRAS, values,
+                NotesDatabaseHelper.COL_MANTRA_ID + "=?",
+                new String[]{String.valueOf(mantraId)});
+    }
+
+    /**
+     * Find a mantra's local ID by its cloud_id.
+     */
+    public long getMantraIdByCloudId(String cloudId) {
+        if (cloudId == null || cloudId.length() == 0) return -1;
+        SQLiteDatabase db = dbHelper.getReadableDatabase();
+        Cursor cursor = db.query(NotesDatabaseHelper.TABLE_MANTRAS,
+                new String[]{NotesDatabaseHelper.COL_MANTRA_ID},
+                NotesDatabaseHelper.COL_MANTRA_CLOUD_ID + "=?",
+                new String[]{cloudId},
+                null, null, null);
+        long id = -1;
+        if (cursor != null && cursor.moveToFirst()) {
+            id = cursor.getLong(0);
+            cursor.close();
+        } else {
+            if (cursor != null) cursor.close();
+        }
+        return id;
+    }
+
+    // ============ DAILY SESSION CLOUD SYNC HELPERS ============
+
+    /**
+     * Get the cloud_id for a daily session.
+     */
+    public String getDailySessionCloudId(long mantraId, String date) {
+        SQLiteDatabase db = dbHelper.getReadableDatabase();
+        Cursor cursor = db.query(NotesDatabaseHelper.TABLE_DAILY_SESSIONS,
+                new String[]{NotesDatabaseHelper.COL_SESSION_CLOUD_ID},
+                NotesDatabaseHelper.COL_SESSION_MANTRA_ID + "=? AND " +
+                        NotesDatabaseHelper.COL_SESSION_DATE + "=?",
+                new String[]{String.valueOf(mantraId), date},
+                null, null, null);
+        String cloudId = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            int idx = cursor.getColumnIndex(NotesDatabaseHelper.COL_SESSION_CLOUD_ID);
+            if (idx >= 0) {
+                cloudId = cursor.getString(idx);
+            }
+            cursor.close();
+        } else {
+            if (cursor != null) cursor.close();
+        }
+        return cloudId;
+    }
+
+    /**
+     * Set the cloud_id for a daily session.
+     */
+    public void setDailySessionCloudId(long mantraId, String date, String cloudId) {
+        SQLiteDatabase db = dbHelper.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(NotesDatabaseHelper.COL_SESSION_CLOUD_ID, cloudId);
+        db.update(NotesDatabaseHelper.TABLE_DAILY_SESSIONS, values,
+                NotesDatabaseHelper.COL_SESSION_MANTRA_ID + "=? AND " +
+                        NotesDatabaseHelper.COL_SESSION_DATE + "=?",
+                new String[]{String.valueOf(mantraId), date});
+    }
+
+    /**
+     * Set the session count directly (used during cloud sync restore).
+     */
+    public void setDailySessionCount(long mantraId, String date, int count) {
+        SQLiteDatabase db = dbHelper.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(NotesDatabaseHelper.COL_SESSION_COUNT, count);
+        db.update(NotesDatabaseHelper.TABLE_DAILY_SESSIONS, values,
+                NotesDatabaseHelper.COL_SESSION_MANTRA_ID + "=? AND " +
+                        NotesDatabaseHelper.COL_SESSION_DATE + "=?",
+                new String[]{String.valueOf(mantraId), date});
+    }
+
     public void saveMantraHistory(long mantraId, String date, int count) {
         SQLiteDatabase db = dbHelper.getWritableDatabase();
         // Check if entry exists for this date
