@@ -421,6 +421,9 @@ public class MasterPasswordActivity extends Activity {
 
         btnAction.setEnabled(false);
         textError.setVisibility(View.GONE);
+        if (textSubtitle != null) {
+            textSubtitle.setText("Unlocking vault...");
+        }
 
         // New v2 vault system
         if (keyManager.isVaultInitialized()) {
@@ -434,19 +437,36 @@ public class MasterPasswordActivity extends Activity {
                         public void run() {
                             if (valid) {
                                 Log.d(TAG, "[VAULT_UNLOCK_SUCCESS]");
+
+                                // CRITICAL FIX: Set session state SYNCHRONOUSLY before
+                                // anything else. updateSessionTimestamp() now uses .commit()
+                                // so the timestamp is guaranteed to be persisted before
+                                // we launch MainActivity. This eliminates the race condition
+                                // where isSessionValid() returned false on first launch.
                                 sessionManager.setPasswordSetFlag(true);
                                 sessionManager.updateSessionTimestamp();
                                 sessionManager.setEncryptionMigrated(true);
 
-                                // CRITICAL FIX: Ensure vault is uploaded to Firestore
-                                // If initial upload failed (network error, offline, etc.),
-                                // this retries the upload so reinstall/multi-device works.
+                                // Verify DEK is actually in memory before proceeding
+                                if (!keyManager.isVaultUnlocked()) {
+                                    Log.e(TAG, "[VAULT_UNLOCK] CRITICAL: DEK not in memory after unlock!");
+                                    btnAction.setEnabled(true);
+                                    showError("Vault unlock verification failed. Please try again.");
+                                    return;
+                                }
+
+                                Log.d(TAG, "[VAULT_UNLOCK] DEK verified in memory, session set");
+
+                                // Ensure vault is uploaded to Firestore
                                 keyManager.ensureVaultUploaded();
 
                                 launchMain();
                             } else {
                                 Log.w(TAG, "[VAULT_UNLOCK_FAILED] Wrong password");
                                 btnAction.setEnabled(true);
+                                if (textSubtitle != null) {
+                                    textSubtitle.setText(R.string.master_password_subtitle_unlock);
+                                }
                                 showError(getString(R.string.master_password_error_wrong));
                                 editPassword.setText("");
                             }
@@ -606,10 +626,14 @@ public class MasterPasswordActivity extends Activity {
     }
 
     /**
-     * CRITICAL FIX: Perform cloud sync BEFORE launching MainActivity.
+     * CRITICAL FIX v3: Perform cloud sync BEFORE launching MainActivity.
      * This ensures that after reinstall, notes are already in local DB
      * and DEK is fully ready when MainActivity.loadNotes() runs.
-     * Eliminates the race condition where loadNotes() ran before sync completed.
+     *
+     * ARCHITECTURE FIX: Uses keyManager.isVaultUnlocked() instead of
+     * sessionManager.isSessionValid() to decide whether sync is possible.
+     * The vault unlock state (DEK in memory) is the authoritative check.
+     * Session timestamp is secondary and can have timing issues.
      */
     private void launchMain() {
         PrefsManager prefs = PrefsManager.getInstance(this);
@@ -627,8 +651,9 @@ public class MasterPasswordActivity extends Activity {
         // CRITICAL: If logged in and cloud sync enabled, perform sync HERE
         // before going to MainActivity. This guarantees notes are in local DB
         // with DEK fully ready. No race condition possible.
+        // FIX v3: Check keyManager.isVaultUnlocked() instead of session timestamp
         if (authManager.isLoggedIn() && prefs.isCloudSyncEnabled()
-                && sessionManager.isSessionValid()) {
+                && keyManager.isVaultUnlocked()) {
             Log.d(TAG, "[LAUNCH] Performing pre-launch cloud sync...");
             if (textSubtitle != null) {
                 textSubtitle.setText("Syncing notes...");
