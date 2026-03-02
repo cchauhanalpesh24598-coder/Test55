@@ -157,15 +157,29 @@ public class MainActivity extends Activity {
             if (!FirebaseAuthManager.getInstance(this).isLoggedIn()) return;
             if (!KeyManager.getInstance(this).isVaultUnlocked()) return;
 
-            CloudSyncManager.getInstance(this).syncOnAppStart(
+            final CloudSyncManager syncManager = CloudSyncManager.getInstance(this);
+
+            syncManager.syncOnAppStart(
                     new CloudSyncManager.SyncCallback() {
                         public void onSyncComplete(final boolean success) {
-                            runOnUiThread(new Runnable() {
-                                public void run() {
-                                    if (success) {
-                                        loadNotes();
-                                        loadCategoryTabs();
+                            // After notes sync, sync mantras/sessions
+                            syncManager.syncMantrasAndSessions(new CloudSyncManager.SyncCallback() {
+                                public void onSyncComplete(final boolean mantraSuccess) {
+                                    // Download missing attachment files
+                                    try {
+                                        syncManager.downloadAllMissingAttachments();
+                                    } catch (Exception e) {
+                                        // Attachment download failure must not crash
                                     }
+
+                                    runOnUiThread(new Runnable() {
+                                        public void run() {
+                                            if (success || mantraSuccess) {
+                                                loadNotes();
+                                                loadCategoryTabs();
+                                            }
+                                        }
+                                    });
                                 }
                             });
                         }
