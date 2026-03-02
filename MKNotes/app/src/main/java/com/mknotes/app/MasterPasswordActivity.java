@@ -17,6 +17,7 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.mknotes.app.cloud.CloudSyncManager;
 import com.mknotes.app.cloud.FirebaseAuthManager;
 import com.mknotes.app.crypto.CryptoManager;
 import com.mknotes.app.crypto.KeyManager;
@@ -604,6 +605,12 @@ public class MasterPasswordActivity extends Activity {
         textError.setVisibility(View.VISIBLE);
     }
 
+    /**
+     * CRITICAL FIX: Perform cloud sync BEFORE launching MainActivity.
+     * This ensures that after reinstall, notes are already in local DB
+     * and DEK is fully ready when MainActivity.loadNotes() runs.
+     * Eliminates the race condition where loadNotes() ran before sync completed.
+     */
     private void launchMain() {
         PrefsManager prefs = PrefsManager.getInstance(this);
         FirebaseAuthManager authManager = FirebaseAuthManager.getInstance(this);
@@ -617,7 +624,53 @@ public class MasterPasswordActivity extends Activity {
             return;
         }
 
-        Intent intent = new Intent(this, MainActivity.class);
+        // CRITICAL: If logged in and cloud sync enabled, perform sync HERE
+        // before going to MainActivity. This guarantees notes are in local DB
+        // with DEK fully ready. No race condition possible.
+        if (authManager.isLoggedIn() && prefs.isCloudSyncEnabled()
+                && sessionManager.isSessionValid()) {
+            Log.d(TAG, "[LAUNCH] Performing pre-launch cloud sync...");
+            if (textSubtitle != null) {
+                textSubtitle.setText("Syncing notes...");
+            }
+            if (btnAction != null) {
+                btnAction.setEnabled(false);
+            }
+
+            CloudSyncManager.getInstance(this).syncOnAppStart(
+                    new CloudSyncManager.SyncCallback() {
+                        public void onSyncComplete(final boolean success) {
+                            runOnUiThread(new Runnable() {
+                                public void run() {
+                                    Log.d(TAG, "[LAUNCH] Pre-launch sync complete, success=" + success);
+                                    goToMainActivity();
+                                }
+                            });
+                        }
+                    });
+
+            // Safety timeout: if sync takes too long (>10s), go to Main anyway
+            new android.os.Handler().postDelayed(new Runnable() {
+                public void run() {
+                    if (!isFinishing()) {
+                        Log.w(TAG, "[LAUNCH] Sync timeout, proceeding to MainActivity");
+                        goToMainActivity();
+                    }
+                }
+            }, 10000);
+        } else {
+            goToMainActivity();
+        }
+    }
+
+    /** Flag to prevent double-launch from timeout + callback race */
+    private boolean hasLaunched = false;
+
+    private void goToMainActivity() {
+        if (hasLaunched) return;
+        hasLaunched = true;
+
+        Intent intent = new Intent(MasterPasswordActivity.this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(intent);
         finish();
