@@ -113,10 +113,21 @@ public class MainActivity extends Activity {
             session.updateSessionTimestamp();
         }
 
-        // CRITICAL FIX: Ensure vault metadata is uploaded to Firestore.
-        // If initial upload failed, this retries on every app resume.
-        // Without this, reinstall on new device = permanent data loss.
-        KeyManager.getInstance(this).ensureVaultUploaded();
+        // CRITICAL FIX: Only load notes if DEK is available.
+        // After reinstall, notes are already synced by MasterPasswordActivity
+        // before launching this activity, so loadNotes() will decrypt correctly.
+        KeyManager km = KeyManager.getInstance(this);
+        if (!km.isVaultUnlocked() && km.isVaultInitialized()) {
+            // Vault exists but DEK not in memory -- redirect to unlock screen
+            Intent lockIntent = new Intent(this, MasterPasswordActivity.class);
+            lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            startActivity(lockIntent);
+            finish();
+            return;
+        }
+
+        // Ensure vault metadata is uploaded to Firestore.
+        km.ensureVaultUploaded();
 
         loadNotes();
         loadCategoryTabs();
