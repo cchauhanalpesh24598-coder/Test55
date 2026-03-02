@@ -17,7 +17,7 @@ android {
     }
     buildFeatures {
         buildConfig true
-    }
+
     buildTypes {
         release {
             minifyEnabled false
@@ -53,6 +53,7 @@ dependencies {
     implementation 'com.google.firebase:firebase-firestore'
     implementation 'com.google.firebase:firebase-appcheck-playintegrity'
     implementation 'com.google.firebase:firebase-appcheck-debug'
+    implementation 'com.google.firebase:firebase-storage'
 
     // AndroidX
     implementation 'androidx.core:core:1.13.1'
