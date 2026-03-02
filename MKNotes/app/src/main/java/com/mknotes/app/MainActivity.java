@@ -99,31 +99,39 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
 
-        // Session-based lock: if session expired, redirect to password screen
+        KeyManager km = KeyManager.getInstance(this);
         SessionManager session = SessionManager.getInstance(this);
+
+        // CRITICAL FIX: Check vault unlock state (DEK in memory) as the PRIMARY guard.
+        // Session timeout is secondary -- it only matters if the vault is also locked.
+        // This eliminates the race condition where session timestamp wasn't flushed yet
+        // but DEK was already in memory from a successful unlock.
+
+        if (!km.isVaultUnlocked()) {
+            // DEK is NOT in memory -- must go to password screen
+            if (km.isVaultInitialized() || session.isPasswordSet()) {
+                Intent lockIntent = new Intent(this, MasterPasswordActivity.class);
+                lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                startActivity(lockIntent);
+                finish();
+                return;
+            }
+        }
+
+        // DEK is in memory -- session-based lock check (for auto-lock after timeout)
         if (session.isPasswordSet() && !session.isSessionValid()) {
+            // Session expired while app was backgrounded -- lock the vault
+            session.clearSession(); // This zeros the DEK
             Intent lockIntent = new Intent(this, MasterPasswordActivity.class);
             lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
             startActivity(lockIntent);
             finish();
             return;
         }
+
         // Refresh session timestamp on every resume
         if (session.isPasswordSet()) {
             session.updateSessionTimestamp();
-        }
-
-        // CRITICAL FIX: Only load notes if DEK is available.
-        // After reinstall, notes are already synced by MasterPasswordActivity
-        // before launching this activity, so loadNotes() will decrypt correctly.
-        KeyManager km = KeyManager.getInstance(this);
-        if (!km.isVaultUnlocked() && km.isVaultInitialized()) {
-            // Vault exists but DEK not in memory -- redirect to unlock screen
-            Intent lockIntent = new Intent(this, MasterPasswordActivity.class);
-            lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            startActivity(lockIntent);
-            finish();
-            return;
         }
 
         // Ensure vault metadata is uploaded to Firestore.
@@ -139,12 +147,15 @@ public class MainActivity extends Activity {
     /**
      * Perform bidirectional cloud sync if enabled and authenticated.
      * On sync complete, refreshes the note list to show any new/updated notes.
+     *
+     * CRITICAL FIX v3: Uses KeyManager.isVaultUnlocked() instead of
+     * SessionManager.isSessionValid() for the sync guard check.
      */
     private void triggerCloudSync() {
         try {
             if (!PrefsManager.getInstance(this).isCloudSyncEnabled()) return;
             if (!FirebaseAuthManager.getInstance(this).isLoggedIn()) return;
-            if (!SessionManager.getInstance(this).isSessionValid()) return;
+            if (!KeyManager.getInstance(this).isVaultUnlocked()) return;
 
             CloudSyncManager.getInstance(this).syncOnAppStart(
                     new CloudSyncManager.SyncCallback() {
@@ -173,7 +184,7 @@ public class MainActivity extends Activity {
             if (cloudId == null || cloudId.length() == 0) return;
             if (!PrefsManager.getInstance(this).isCloudSyncEnabled()) return;
             if (!FirebaseAuthManager.getInstance(this).isLoggedIn()) return;
-            if (!SessionManager.getInstance(this).isSessionValid()) return;
+            if (!KeyManager.getInstance(this).isVaultUnlocked()) return;
 
             CloudSyncManager.getInstance(this).deleteNoteFromCloud(cloudId);
         } catch (Exception e) {
@@ -188,7 +199,7 @@ public class MainActivity extends Activity {
         try {
             if (!PrefsManager.getInstance(this).isCloudSyncEnabled()) return;
             if (!FirebaseAuthManager.getInstance(this).isLoggedIn()) return;
-            if (!SessionManager.getInstance(this).isSessionValid()) return;
+            if (!KeyManager.getInstance(this).isVaultUnlocked()) return;
 
             CloudSyncManager.getInstance(this).uploadNote(noteId);
         } catch (Exception e) {
