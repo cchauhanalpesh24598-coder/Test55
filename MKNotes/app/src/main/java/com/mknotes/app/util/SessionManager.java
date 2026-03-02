@@ -114,9 +114,13 @@ public class SessionManager {
 
     /**
      * Record that the user has successfully unlocked the app right now.
+     * CRITICAL FIX: Uses .commit() (synchronous) instead of .apply() (async).
+     * This prevents the race condition where MainActivity starts and reads
+     * the OLD timestamp (0) before .apply() flushes, causing isSessionValid()
+     * to return false and triggering [DECRYPTION_FAILED] on first launch.
      */
     public void updateSessionTimestamp() {
-        prefs.edit().putLong(KEY_LAST_UNLOCK, System.currentTimeMillis()).apply();
+        prefs.edit().putLong(KEY_LAST_UNLOCK, System.currentTimeMillis()).commit();
     }
 
     /**
@@ -146,19 +150,21 @@ public class SessionManager {
     /**
      * Get the cached DEK for encryption/decryption.
      * Delegates to KeyManager.getDEK() which returns a COPY.
-     * Returns null if session has expired or vault is locked.
+     * Returns null if vault is locked.
      *
-     * CRITICAL FIX: Removed aggressive lockVault() call on session expiry.
-     * Previously, if isSessionValid() returned false for ANY reason (even a
-     * transient timing issue), the DEK was zeroed permanently, causing all
-     * subsequent decrypt attempts to fail with [DECRYPTION_FAILED].
-     * Now, session expiry only returns null -- the vault is locked explicitly
-     * by clearSession() or by the lock screen, not by a read-path getter.
+     * CRITICAL FIX v3: Removed session timeout check from key getter.
+     * The DEK availability should NEVER depend on session timeout.
+     * Session timeout is only for UI lock (redirect to password screen).
+     * If the vault is unlocked (DEK in memory), it should always be available
+     * for decryption. The vault is locked explicitly by clearSession() or
+     * the lock screen, not by a read-path getter timeout.
+     *
+     * Previous bug: isSessionValid() used timestamp from SharedPreferences.
+     * After reinstall, when MasterPasswordActivity called updateSessionTimestamp()
+     * and then launched MainActivity, the timestamp wasn't always flushed,
+     * causing getCachedKey() to return null and all notes to show [DECRYPTION_FAILED].
      */
     public byte[] getCachedKey() {
-        if (!isSessionValid()) {
-            return null;
-        }
         return KeyManager.getInstance(appContext).getDEK();
     }
 
