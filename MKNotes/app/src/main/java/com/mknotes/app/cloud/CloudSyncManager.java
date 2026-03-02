@@ -22,7 +22,6 @@ import com.google.firebase.firestore.WriteBatch;
 import com.mknotes.app.db.NotesRepository;
 import com.mknotes.app.model.Note;
 import com.mknotes.app.util.PrefsManager;
-import com.mknotes.app.util.SessionManager;
 
 import java.util.HashMap;
 import java.util.List;
@@ -107,7 +106,12 @@ public class CloudSyncManager {
 
     /**
      * Check if cloud sync is possible right now.
-     * Requires: sync enabled, Firebase logged in, session valid.
+     * Requires: sync enabled, Firebase logged in, vault unlocked (DEK in memory).
+     *
+     * CRITICAL FIX v3: Uses KeyManager.isVaultUnlocked() instead of
+     * SessionManager.isSessionValid(). The vault unlock state is the
+     * authoritative check for whether sync operations can proceed.
+     * Session timestamp can have timing issues after reinstall.
      */
     private boolean canSync() {
         if (!PrefsManager.getInstance(appContext).isCloudSyncEnabled()) {
@@ -116,7 +120,7 @@ public class CloudSyncManager {
         if (!FirebaseAuthManager.getInstance(appContext).isLoggedIn()) {
             return false;
         }
-        if (!SessionManager.getInstance(appContext).isSessionValid()) {
+        if (!com.mknotes.app.crypto.KeyManager.getInstance(appContext).isVaultUnlocked()) {
             return false;
         }
         return true;
@@ -177,9 +181,9 @@ public class CloudSyncManager {
                         if (snapshots.getMetadata().hasPendingWrites()) {
                             return;
                         }
-                        // Re-check session before processing
-                        if (!SessionManager.getInstance(appContext).isSessionValid()) {
-                            Log.w(TAG, "Session expired during realtime event, skipping");
+                        // Re-check vault unlock before processing
+                        if (!com.mknotes.app.crypto.KeyManager.getInstance(appContext).isVaultUnlocked()) {
+                            Log.w(TAG, "Vault locked during realtime event, skipping");
                             return;
                         }
 
