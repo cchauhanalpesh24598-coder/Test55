@@ -662,19 +662,38 @@ public class MasterPasswordActivity extends Activity {
                 btnAction.setEnabled(false);
             }
 
-            CloudSyncManager.getInstance(this).syncOnAppStart(
+            final CloudSyncManager syncManager = CloudSyncManager.getInstance(this);
+            syncManager.syncOnAppStart(
                     new CloudSyncManager.SyncCallback() {
                         public void onSyncComplete(final boolean success) {
-                            runOnUiThread(new Runnable() {
-                                public void run() {
-                                    Log.d(TAG, "[LAUNCH] Pre-launch sync complete, success=" + success);
-                                    goToMainActivity();
+                            Log.d(TAG, "[LAUNCH] Notes sync complete, success=" + success);
+
+                            // STEP 2: Sync mantras and daily sessions
+                            Log.d(TAG, "[LAUNCH] Starting mantra/session sync...");
+                            syncManager.syncMantrasAndSessions(new CloudSyncManager.SyncCallback() {
+                                public void onSyncComplete(final boolean mantraSuccess) {
+                                    Log.d(TAG, "[LAUNCH] Mantra sync complete, success=" + mantraSuccess);
+
+                                    // STEP 3: Download missing attachment files
+                                    Log.d(TAG, "[LAUNCH] Starting attachment download...");
+                                    try {
+                                        syncManager.downloadAllMissingAttachments();
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "[LAUNCH] Attachment download error: " + e.getMessage());
+                                    }
+
+                                    runOnUiThread(new Runnable() {
+                                        public void run() {
+                                            Log.d(TAG, "[LAUNCH] Full sync chain complete, going to MainActivity");
+                                            goToMainActivity();
+                                        }
+                                    });
                                 }
                             });
                         }
                     });
 
-            // Safety timeout: if sync takes too long (>10s), go to Main anyway
+            // Safety timeout: if sync takes too long (>15s), go to Main anyway
             new android.os.Handler().postDelayed(new Runnable() {
                 public void run() {
                     if (!isFinishing()) {
@@ -682,7 +701,7 @@ public class MasterPasswordActivity extends Activity {
                         goToMainActivity();
                     }
                 }
-            }, 10000);
+            }, 15000);
         } else {
             goToMainActivity();
         }
