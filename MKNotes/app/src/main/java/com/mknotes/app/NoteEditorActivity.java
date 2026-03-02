@@ -3138,9 +3138,12 @@ public class NoteEditorActivity extends Activity {
             if (currentNote == null || currentNote.getId() <= 0) return;
             if (!PrefsManager.getInstance(this).isCloudSyncEnabled()) return;
             if (!FirebaseAuthManager.getInstance(this).isLoggedIn()) return;
-            if (!SessionManager.getInstance(this).isSessionValid()) return;
+            if (!com.mknotes.app.crypto.KeyManager.getInstance(this).isVaultUnlocked()) return;
 
-            CloudSyncManager.getInstance(this).uploadNote(currentNote.getId());
+            CloudSyncManager syncManager = CloudSyncManager.getInstance(this);
+            syncManager.uploadNote(currentNote.getId());
+            // Upload attachment files to Firebase Storage
+            syncManager.uploadAllAttachmentsForNote(currentNote.getId());
         } catch (Exception e) {
             // Cloud sync failure must not crash the app
         }
@@ -3463,6 +3466,14 @@ public class NoteEditorActivity extends Activity {
                 }
                 // Create/ensure session for today
                 repository.getOrCreateDailySession(mantra.getId(), today);
+                // Sync mantra and session to cloud
+                try {
+                    CloudSyncManager cloudSync = CloudSyncManager.getInstance(NoteEditorActivity.this);
+                    cloudSync.uploadMantra(mantra.getId());
+                    cloudSync.uploadDailySession(mantra.getId(), today);
+                } catch (Exception e) {
+                    // Cloud sync failure must not crash
+                }
                 activateMeditationMode();
                 Toast.makeText(NoteEditorActivity.this,
                         mantra.getName() + " added",
@@ -3615,6 +3626,12 @@ public class NoteEditorActivity extends Activity {
         long id = repository.insertMantra(mantra);
         if (id > 0) {
             Toast.makeText(this, name + " saved to library", Toast.LENGTH_SHORT).show();
+            // Upload mantra to cloud
+            try {
+                CloudSyncManager.getInstance(this).uploadMantra(id);
+            } catch (Exception e) {
+                // Cloud sync failure must not crash
+            }
         }
     }
 
